@@ -197,7 +197,7 @@ function frontColor(f) {
   return [C.front0, C.front1, C.front2, C.front3][f] || C.frontN;
 }
 
-function ParCoords({ data, axes, directions, highlightId, onHover }) {
+function ParCoords({ data, axes, directions, objectives, preferredObjectiveEdge, highlightId, onHover }) {
   const svgRef = useRef(null);
   const containerRef = useRef(null);
   const [dims, setDims] = useState({ w: 800, h: 370 });
@@ -225,16 +225,21 @@ function ParCoords({ data, axes, directions, highlightId, onHover }) {
 
     const x = d3.scalePoint().domain(axes).range([0, w]).padding(0.08);
     const axisMeta = {};
+    const prefersTop = preferredObjectiveEdge !== "bottom";
     axes.forEach(ax => {
       const vals = data.map(d => d[ax]).filter(v => v !== null && v !== undefined && v !== "");
       const numericVals = vals.filter(v => typeof v === "number" && Number.isFinite(v));
       const numericShare = vals.length ? numericVals.length / vals.length : 0;
+      const isObjectiveAxis = objectives.includes(ax);
+      const axisDir = directions[ax] === "max" ? "max" : "min";
+      const invertForPreference = isObjectiveAxis && ((axisDir === "min" && prefersTop) || (axisDir === "max" && !prefersTop));
+      const yRange = invertForPreference ? [0, h] : [h, 0];
       if (numericVals.length && numericShare >= 0.7) {
         const ext = d3.extent(numericVals);
         const pad = ((ext[1] || 0) - (ext[0] || 0)) * 0.1 || 1;
         axisMeta[ax] = {
           type: "numeric",
-          scale: d3.scaleLinear().domain([ext[0] - pad, ext[1] + pad]).range([h, 0]),
+          scale: d3.scaleLinear().domain([ext[0] - pad, ext[1] + pad]).range(yRange),
         };
       } else {
         const categories = Array.from(new Set(vals.map(v => String(v))));
@@ -459,6 +464,7 @@ export default function ParetoApp() {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [showEpsilonControls, setShowEpsilonControls] = useState(false);
   const [showPreferenceControls, setShowPreferenceControls] = useState(false);
+  const [preferredObjectiveEdge, setPreferredObjectiveEdge] = useState("top");
   const [loaded, setLoaded] = useState(false);
   const fileRef = useRef(null);
 
@@ -956,6 +962,27 @@ export default function ParetoApp() {
           </div>
 
           <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>PARALLEL ORIENTATION</div>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+              <Chip
+                label="Preferred @ Top"
+                active={preferredObjectiveEdge === "top"}
+                onClick={() => setPreferredObjectiveEdge("top")}
+                color={C.highlight}
+              />
+              <Chip
+                label="Preferred @ Bottom"
+                active={preferredObjectiveEdge === "bottom"}
+                onClick={() => setPreferredObjectiveEdge("bottom")}
+                color={C.highlight}
+              />
+            </div>
+            <p style={{ fontSize: 9, color: C.textDim, marginTop: 4, lineHeight: 1.3 }}>
+              Objective axes flip automatically so the preferred direction (min/max) points toward the selected edge.
+            </p>
+          </div>
+
+          <div style={{ marginBottom: 18 }}>
             <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>OBJECTIVES</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
               {objectives.map(col => (
@@ -1163,8 +1190,19 @@ export default function ParetoApp() {
                 <div style={{ fontSize: 9, fontFamily: FM, color: C.textDim, marginBottom: 8 }}>
                   Axes reflect categorized columns from Label, Decisions, Objectives, Constraints, Metrics, and custom groups.
                 </div>
+                <div style={{ fontSize: 9, fontFamily: FM, color: C.highlight, marginBottom: 8 }}>
+                  Orientation: preferred objective direction is toward the {preferredObjectiveEdge === "top" ? "top" : "bottom"} edge.
+                </div>
                 {displayCols.length > 0 ? (
-                  <ParCoords data={visibleData} axes={displayCols} directions={directions} highlightId={highlightId} onHover={setHighlightId} />
+                  <ParCoords
+                    data={visibleData}
+                    axes={displayCols}
+                    directions={directions}
+                    objectives={objectives}
+                    preferredObjectiveEdge={preferredObjectiveEdge}
+                    highlightId={highlightId}
+                    onHover={setHighlightId}
+                  />
                 ) : (
                   <div style={{ padding: 60, textAlign: "center", color: C.textDim, fontSize: 13 }}>Select at least one decision or objective column.</div>
                 )}

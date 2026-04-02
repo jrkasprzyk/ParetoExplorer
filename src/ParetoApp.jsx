@@ -17,7 +17,10 @@ const FB = `'DM Sans','Segoe UI',system-ui,sans-serif`;
 
 function parseCSV(text) {
   const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
-  if (lines.length < 2) return { headers: [], rows: [] };
+  if (lines.length < 2) return { headers: [], rows: [], columnRoles: {} };
+
+  const normalizeCell = (value) => String(value || "").replace(/^"|"$/g, '').trim();
+
   function split(line) {
     const r = []; let cur = "", inQ = false;
     for (const ch of line) {
@@ -28,18 +31,89 @@ function parseCSV(text) {
     r.push(cur.trim());
     return r;
   }
-  const headers = split(lines[0]).map(h => h.replace(/^"|"$/g, ''));
-  const rows = lines.slice(1).map((line, i) => {
+
+  const inferRole = (value) => {
+    const v = normalizeCell(value).toLowerCase();
+    if (!v) return null;
+    if (/(decision|decisions|policy|policies|variable|variables|input|inputs|lever|levers)/.test(v)) {
+      return "decision";
+    }
+    if (/(objective|objectives|outcome|outcomes|metric|metrics|goal|goals)/.test(v)) {
+      return "objective";
+    }
+    return null;
+  };
+
+  const isLikelyHeaderRow = (cells) => {
+    if (!cells.length) return false;
+    const cleaned = cells.map(normalizeCell);
+    const nonEmpty = cleaned.filter(c => c !== "").length;
+    if (!nonEmpty) return false;
+    const numeric = cleaned.filter(c => c !== "" && !Number.isNaN(Number(c))).length;
+    return nonEmpty >= Math.ceil(cells.length * 0.5) && numeric <= Math.floor(cells.length * 0.25);
+  };
+
+  const isLikelyDataRow = (cells) => {
+    if (!cells.length) return false;
+    const cleaned = cells.map(normalizeCell);
+    const nonEmpty = cleaned.filter(c => c !== "").length;
+    if (!nonEmpty) return false;
+    const numeric = cleaned.filter(c => c !== "" && !Number.isNaN(Number(c))).length;
+    return numeric >= Math.ceil(nonEmpty * 0.4);
+  };
+
+  const makeUniqueHeaders = (candidateHeaders) => {
+    const used = new Map();
+    return candidateHeaders.map((rawHeader, idx) => {
+      const base = normalizeCell(rawHeader) || `Column_${idx + 1}`;
+      const count = used.get(base) || 0;
+      used.set(base, count + 1);
+      return count === 0 ? base : `${base}_${count + 1}`;
+    });
+  };
+
+  const parsedLines = lines.map(split);
+  const first = parsedLines[0] || [];
+  const second = parsedLines[1] || [];
+  const third = parsedLines[2] || [];
+
+  const hasDualHeader =
+    parsedLines.length >= 3 &&
+    isLikelyHeaderRow(first) &&
+    isLikelyHeaderRow(second) &&
+    isLikelyDataRow(third);
+
+  let headers = [];
+  let dataStart = 1;
+  const columnRoles = {};
+
+  if (hasDualHeader) {
+    headers = makeUniqueHeaders(second);
+    dataStart = 2;
+    headers.forEach((h, j) => {
+      const inferred = inferRole(first[j]) || inferRole(second[j]);
+      if (inferred) columnRoles[h] = inferred;
+    });
+  } else {
+    headers = makeUniqueHeaders(first);
+    headers.forEach((h, j) => {
+      const inferred = inferRole(first[j]);
+      if (inferred) columnRoles[h] = inferred;
+    });
+  }
+
+  const rows = lines.slice(dataStart).map((line, i) => {
     const vals = split(line);
     const row = { _id: i };
     headers.forEach((h, j) => {
-      const raw = (vals[j] || "").replace(/^"|"$/g, '');
+      const raw = normalizeCell(vals[j] || "");
       const num = parseFloat(raw);
       row[h] = (raw !== "" && !isNaN(num)) ? num : raw;
     });
     return row;
   });
-  return { headers, rows };
+
+  return { headers, rows, columnRoles };
 }
 
 function epsilonDominates(a, b, objs, epsilons, dirs) {
@@ -293,6 +367,7 @@ Omicron-15,61000,92,0.97,142,500`;
 export default function ParetoApp() {
   const [headers, setHeaders] = useState([]);
   const [rows, setRows] = useState([]);
+  const [columnRoleHints, setColumnRoleHints] = useState({});
   const [objectives, setObjectives] = useState([]);
   const [directions, setDirections] = useState({});
   const [epsilons, setEpsilons] = useState({});
@@ -365,12 +440,19 @@ export default function ParetoApp() {
   }, [fronts, filterText, sortCol, sortAsc, showOnlyPareto, weights, objectives, directions, colStats, headers]);
 
   const loadData = useCallback((csvText) => {
-    const { headers: h, rows: r } = parseCSV(csvText);
+    const { headers: h, rows: r, columnRoles } = parseCSV(csvText);
     setHeaders(h); setRows(r);
+    setColumnRoleHints(columnRoles || {});
     const nc = h.filter(col => r.some(row => typeof row[col] === "number"));
     const sc = h.filter(col => r.some(row => typeof row[col] === "string" && row[col] !== ""));
-    setDecisionCol(sc[0] || null);
-    setObjectives(nc);
+    const decisionCandidates = h.filter(col => (columnRoles || {})[col] === "decision");
+    const objectiveCandidates = h.filter(col => (columnRoles || {})[col] === "objective");
+
+    const resolvedObjectives = objectiveCandidates.filter(col => nc.includes(col));
+    const resolvedDecision = decisionCandidates.find(col => sc.includes(col)) || sc[0] || null;
+
+    setDecisionCol(resolvedDecision);
+    setObjectives(resolvedObjectives.length ? resolvedObjectives : nc);
     const dirs = {}; nc.forEach(c => dirs[c] = "min");
     setDirections(dirs);
     const w = {}; nc.forEach(c => w[c] = 1);
@@ -389,6 +471,7 @@ export default function ParetoApp() {
   const loadDemo = useCallback(() => {
     const d = { ...parseCSV(DEMO) };
     setHeaders(d.headers); setRows(d.rows);
+    setColumnRoleHints(d.columnRoles || {});
     setDecisionCol("Decision");
     const nc = d.headers.filter(col => d.rows.some(row => typeof row[col] === "number"));
     setObjectives(nc);
@@ -553,7 +636,7 @@ export default function ParetoApp() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, fontFamily: FM }}>
                 <thead>
                   <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                    {["Column", "Type", "Objective?", "Direction", "Weight"].map(h => (
+                    {["Column", "Type", "Header Role", "Objective?", "Direction", "Weight"].map(h => (
                       <th key={h} style={{ textAlign: h === "Column" ? "left" : "center", padding: "6px 10px", color: C.textMuted }}>{h}</th>
                     ))}
                   </tr>
@@ -561,10 +644,12 @@ export default function ParetoApp() {
                 <tbody>
                   {headers.map(h => {
                     const isNum = numericCols.includes(h), isObj = objectives.includes(h);
+                    const roleHint = columnRoleHints[h] || "-";
                     return (
                       <tr key={h} style={{ borderBottom: `1px solid ${C.border}22` }}>
                         <td style={{ padding: "5px 10px", color: C.text }}>{h}</td>
                         <td style={{ padding: "5px 10px", textAlign: "center", color: isNum ? C.front1 : C.textDim }}>{isNum ? "numeric" : "text"}</td>
+                        <td style={{ padding: "5px 10px", textAlign: "center", color: roleHint === "-" ? C.textDim : (roleHint === "objective" ? C.accent : C.highlight) }}>{roleHint}</td>
                         <td style={{ padding: "5px 10px", textAlign: "center" }}>
                           {isNum && <input type="checkbox" checked={isObj} onChange={() => toggleObj(h)} style={{ accentColor: C.accent }} />}
                         </td>

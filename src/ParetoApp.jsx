@@ -440,7 +440,7 @@ export default function ParetoApp() {
   const [tab, setTab] = useState("table");
   const [showOnlyPareto, setShowOnlyPareto] = useState(false);
   const [decisionCol, setDecisionCol] = useState(null);
-  const [parallelAxes, setParallelAxes] = useState([]);
+  const [decisionCols, setDecisionCols] = useState([]);
   const [visibleFronts, setVisibleFronts] = useState({});
   const [loaded, setLoaded] = useState(false);
   const fileRef = useRef(null);
@@ -505,8 +505,8 @@ export default function ParetoApp() {
   }, [fronts, filterText, sortCol, sortAsc, showOnlyPareto, weights, objectives, directions, colStats, headers]);
 
   const availableFronts = useMemo(() => {
-    return Array.from(new Set(sortedData.map(r => r._front).filter(f => f !== undefined))).sort((a, b) => a - b);
-  }, [sortedData]);
+    return Array.from(new Set(fronts.flat().map(r => r._front).filter(f => f !== undefined))).sort((a, b) => a - b);
+  }, [fronts]);
 
   useEffect(() => {
     setVisibleFronts(prev => {
@@ -518,19 +518,32 @@ export default function ParetoApp() {
     });
   }, [availableFronts]);
 
-  useEffect(() => {
-    setParallelAxes(prev => {
-      const filtered = prev.filter(col => headers.includes(col));
-      return filtered.length ? filtered : headers;
-    });
-  }, [headers]);
-
-  const parallelData = useMemo(() => {
+  const visibleData = useMemo(() => {
     return sortedData.filter(row => {
       if (row._front === undefined) return true;
       return visibleFronts[row._front] !== false;
     });
   }, [sortedData, visibleFronts]);
+
+  const inferredDecisionCols = useMemo(() => {
+    const roleBased = headers.filter(h => (columnRoleHints || {})[h] === "decision");
+    if (roleBased.length) {
+      return roleBased.filter(h => h !== decisionCol && !objectives.includes(h));
+    }
+    const objectiveIdx = objectives.map(o => headers.indexOf(o)).filter(i => i >= 0);
+    const firstObjectiveIdx = objectiveIdx.length ? Math.min(...objectiveIdx) : -1;
+    if (firstObjectiveIdx > 0) {
+      return headers.slice(0, firstObjectiveIdx).filter(h => h !== decisionCol && !objectives.includes(h));
+    }
+    return [];
+  }, [headers, columnRoleHints, decisionCol, objectives]);
+
+  useEffect(() => {
+    setDecisionCols(prev => {
+      const valid = prev.filter(col => headers.includes(col) && col !== decisionCol && !objectives.includes(col));
+      return valid.length ? valid : inferredDecisionCols;
+    });
+  }, [headers, decisionCol, objectives, inferredDecisionCols]);
 
   const loadData = useCallback((csvText) => {
     const { headers: h, rows: r, columnRoles } = parseCSV(csvText);
@@ -549,10 +562,21 @@ export default function ParetoApp() {
       decisionCandidates[0] ||
       sc[0] ||
       null;
+    const resolvedDecisionCols =
+      decisionCandidates.length
+        ? decisionCandidates.filter(col => col !== resolvedDecision)
+        : (() => {
+            const objectiveIdx = resolvedObjectives.map(o => h.indexOf(o)).filter(i => i >= 0);
+            const firstObjectiveIdx = objectiveIdx.length ? Math.min(...objectiveIdx) : -1;
+            if (firstObjectiveIdx > 0) {
+              return h.slice(0, firstObjectiveIdx).filter(col => col !== resolvedDecision);
+            }
+            return [];
+          })();
 
     setDecisionCol(resolvedDecision);
+    setDecisionCols(resolvedDecisionCols);
     setObjectives(resolvedObjectives.length ? resolvedObjectives : nc);
-    setParallelAxes(h);
     const dirs = {}; nc.forEach(c => dirs[c] = "min");
     setDirections(dirs);
     const w = {}; nc.forEach(c => w[c] = 1);
@@ -573,7 +597,7 @@ export default function ParetoApp() {
     setHeaders(d.headers); setRows(d.rows);
     setColumnRoleHints(d.columnRoles || {});
     setDecisionCol("Decision");
-    setParallelAxes(d.headers);
+    setDecisionCols([]);
     const nc = d.headers.filter(col => d.rows.some(row => typeof row[col] === "number"));
     setObjectives(nc);
     const dirs = {}; nc.forEach(c => dirs[c] = c === "Cost" || c === "Weight" ? "min" : "max");
@@ -584,7 +608,7 @@ export default function ParetoApp() {
   }, []);
 
   const toggleObj = useCallback(col => setObjectives(p => p.includes(col) ? p.filter(c => c !== col) : [...p, col]), []);
-  const toggleParallelAxis = useCallback(col => setParallelAxes(p => p.includes(col) ? p.filter(c => c !== col) : [...p, col]), []);
+  const toggleDecision = useCallback(col => setDecisionCols(p => p.includes(col) ? p.filter(c => c !== col) : [...p, col]), []);
   const toggleDir = useCallback(col => setDirections(p => ({ ...p, [col]: p[col] === "min" ? "max" : "min" })), []);
   const handleSort = useCallback(col => {
     if (sortCol === col) setSortAsc(p => !p);
@@ -624,11 +648,11 @@ export default function ParetoApp() {
     );
   }
 
-  const displayCols = [
+  const displayCols = Array.from(new Set([
     ...(decisionCol ? [decisionCol] : []),
+    ...decisionCols,
     ...objectives,
-    ...headers.filter(h => h !== decisionCol && !objectives.includes(h)),
-  ];
+  ])).filter(col => headers.includes(col));
 
   return (
     <div style={{ fontFamily: FB, background: C.bg, color: C.text, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -668,22 +692,21 @@ export default function ParetoApp() {
         {/* Sidebar */}
         <div style={{ width: 260, minWidth: 260, background: C.surface, borderRight: `1px solid ${C.border}`, padding: 14, overflowY: "auto" }}>
           <div style={{ marginBottom: 18 }}>
-            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>EPSILON (ε) PER OBJECTIVE</div>
-            {objectives.map(o => {
-              const er = epsRanges[o] || { min: 0.001, max: 1, step: 0.001 };
-              return (
-                <div key={o} style={{ marginBottom: 5 }}>
-                  <Slider label={o.length > 8 ? o.slice(0, 6) + "…" : o}
-                    value={epsilons[o] ?? er.min * 100}
-                    onChange={v => setEpsilons(p => ({ ...p, [o]: v }))}
-                    min={er.min} max={er.max} step={er.step} />
-                </div>
-              );
-            })}
-            {objectives.length === 0 && <p style={{ fontSize: 9, color: C.textDim }}>Select objectives first.</p>}
-            <p style={{ fontSize: 9, color: C.textDim, marginTop: 3, lineHeight: 1.3 }}>
-              Each objective gets its own grid resolution. Bigger ε = coarser = fewer Pareto solutions for that dimension.
-            </p>
+            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>LABEL COLUMN</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+              {labelCols.map(col => (
+                <Chip key={col} label={col} active={decisionCol === col} onClick={() => setDecisionCol(col === decisionCol ? null : col)} color={C.highlight} />
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>DECISIONS</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+              {headers.filter(col => col !== decisionCol && !objectives.includes(col)).map(col => (
+                <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={decisionCols.includes(col)} onClick={() => toggleDecision(col)} color={C.front1} />
+              ))}
+            </div>
           </div>
 
           <div style={{ marginBottom: 18 }}>
@@ -705,29 +728,34 @@ export default function ParetoApp() {
           </div>
 
           <div style={{ marginBottom: 18 }}>
-            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>LABEL COLUMN</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-              {labelCols.map(col => (
-                <Chip key={col} label={col} active={decisionCol === col} onClick={() => setDecisionCol(col === decisionCol ? null : col)} color={C.highlight} />
-              ))}
-            </div>
+            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>EPSILON (ε) PER OBJECTIVE</div>
+            {objectives.map(o => {
+              const er = epsRanges[o] || { min: 0.001, max: 1, step: 0.001 };
+              return (
+                <div key={o} style={{ marginBottom: 5 }}>
+                  <Slider label={o.length > 8 ? o.slice(0, 6) + "…" : o}
+                    value={epsilons[o] ?? er.min * 100}
+                    onChange={v => setEpsilons(p => ({ ...p, [o]: v }))}
+                    min={er.min} max={er.max} step={er.step} />
+                </div>
+              );
+            })}
+            {objectives.length === 0 && <p style={{ fontSize: 9, color: C.textDim }}>Select objectives first.</p>}
+            <p style={{ fontSize: 9, color: C.textDim, marginTop: 3, lineHeight: 1.3 }}>
+              Each objective gets its own grid resolution. Bigger ε = coarser = fewer Pareto solutions for that dimension.
+            </p>
           </div>
 
           <div style={{ marginBottom: 18 }}>
-            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>PARALLEL AXES</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, maxHeight: 140, overflowY: "auto" }}>
-              {headers.map(col => (
-                <Chip
-                  key={col}
-                  label={col.length > 14 ? col.slice(0, 12) + "…" : col}
-                  active={parallelAxes.includes(col)}
-                  onClick={() => toggleParallelAxis(col)}
-                  color={C.front1}
-                />
-              ))}
-            </div>
+            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>PREFERENCE WEIGHTS</div>
+            {objectives.map(o => (
+              <div key={o} style={{ marginBottom: 5 }}>
+                <Slider label={o.length > 8 ? o.slice(0, 6) + "…" : o} value={weights[o] ?? 1}
+                  onChange={v => setWeights(p => ({ ...p, [o]: v }))} min={0} max={5} step={0.1} />
+              </div>
+            ))}
             <p style={{ fontSize: 9, color: C.textDim, marginTop: 3, lineHeight: 1.3 }}>
-              Choose any columns to draw in parallel coordinates.
+              Direction-aware normalized aggregate. Higher weight = more important.
             </p>
           </div>
 
@@ -757,19 +785,6 @@ export default function ParetoApp() {
                 />
               )}
             </div>
-          </div>
-
-          <div>
-            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>PREFERENCE WEIGHTS</div>
-            {objectives.map(o => (
-              <div key={o} style={{ marginBottom: 5 }}>
-                <Slider label={o.length > 8 ? o.slice(0, 6) + "…" : o} value={weights[o] ?? 1}
-                  onChange={v => setWeights(p => ({ ...p, [o]: v }))} min={0} max={5} step={0.1} />
-              </div>
-            ))}
-            <p style={{ fontSize: 9, color: C.textDim, marginTop: 3, lineHeight: 1.3 }}>
-              Direction-aware normalized aggregate. Higher weight = more important.
-            </p>
           </div>
         </div>
 
@@ -831,10 +846,13 @@ export default function ParetoApp() {
                 <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6 }}>
                   Drag on axes to brush/filter · Hover lines to inspect · Pareto-style linked interaction
                 </div>
-                {parallelAxes.length > 0 ? (
-                  <ParCoords data={parallelData} axes={parallelAxes} directions={directions} highlightId={highlightId} onHover={setHighlightId} />
+                <div style={{ fontSize: 9, fontFamily: FM, color: C.textDim, marginBottom: 8 }}>
+                  Axes reflect active selections from Label Column, Decisions, and Objectives.
+                </div>
+                {displayCols.length > 0 ? (
+                  <ParCoords data={visibleData} axes={displayCols} directions={directions} highlightId={highlightId} onHover={setHighlightId} />
                 ) : (
-                  <div style={{ padding: 60, textAlign: "center", color: C.textDim, fontSize: 13 }}>Select at least one column in Parallel Axes.</div>
+                  <div style={{ padding: 60, textAlign: "center", color: C.textDim, fontSize: 13 }}>Select at least one decision or objective column.</div>
                 )}
               </div>
               <div style={{ display: "flex", gap: 14, padding: "6px 10px", fontSize: 10, fontFamily: FM, color: C.textMuted, flexWrap: "wrap" }}>
@@ -891,7 +909,7 @@ export default function ParetoApp() {
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedData.map((row, i) => {
+                    {visibleData.map((row, i) => {
                       const isHL = highlightId === row._id;
                       const isP = row._front === 0;
                       return (
@@ -934,7 +952,7 @@ export default function ParetoApp() {
                   </tbody>
                 </table>
               </div>
-              {!sortedData.length && <div style={{ padding: 40, textAlign: "center", color: C.textDim, fontSize: 13 }}>No rows match filters.</div>}
+              {!visibleData.length && <div style={{ padding: 40, textAlign: "center", color: C.textDim, fontSize: 13 }}>No rows match filters or visible fronts.</div>}
             </div>
           )}
         </div>

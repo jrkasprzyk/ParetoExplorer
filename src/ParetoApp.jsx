@@ -53,6 +53,15 @@ function parseCSV(text) {
     return nonEmpty >= Math.ceil(cells.length * 0.5) && numeric <= Math.floor(cells.length * 0.25);
   };
 
+  const isLikelyRoleBandRow = (cells) => {
+    if (!cells.length) return false;
+    const cleaned = cells.map(normalizeCell);
+    const roles = cleaned.map(inferRole).filter(Boolean);
+    // Many dual-header exports use a sparse first row with only broad role labels
+    // (e.g., "Decision Variables" and "Objectives") and blanks elsewhere.
+    return roles.length > 0;
+  };
+
   const isLikelyDataRow = (cells) => {
     if (!cells.length) return false;
     const cleaned = cells.map(normalizeCell);
@@ -79,7 +88,7 @@ function parseCSV(text) {
 
   const hasDualHeader =
     parsedLines.length >= 3 &&
-    isLikelyHeaderRow(first) &&
+    (isLikelyHeaderRow(first) || isLikelyRoleBandRow(first)) &&
     isLikelyHeaderRow(second) &&
     isLikelyDataRow(third);
 

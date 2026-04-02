@@ -441,6 +441,7 @@ export default function ParetoApp() {
   const [epsilons, setEpsilons] = useState({});
   const [epsRanges, setEpsRanges] = useState({});
   const [weights, setWeights] = useState({});
+  const [colWidths, setColWidths] = useState({});
   const [condFormat, setCondFormat] = useState(true);
   const [filterText, setFilterText] = useState({});
   const [sortCol, setSortCol] = useState(null);
@@ -514,6 +515,37 @@ export default function ParetoApp() {
     return s;
   }, [numericCols, rows]);
 
+  const matchesFilter = useCallback((value, filterValue) => {
+    const ft = String(filterValue || "").trim();
+    if (!ft) return true;
+
+    const rangeCmp = ft.match(/^(-?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*\.\.\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)$/);
+    if (rangeCmp && typeof value === "number" && Number.isFinite(value)) {
+      const a = Number.parseFloat(rangeCmp[1]);
+      const b = Number.parseFloat(rangeCmp[2]);
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        const lo = Math.min(a, b);
+        const hi = Math.max(a, b);
+        return value >= lo && value <= hi;
+      }
+    }
+
+    const numericCmp = ft.match(/^(>=|<=|!=|=|>|<)\s*(-?\d*\.?\d+(?:[eE][+-]?\d+)?)$/);
+    if (numericCmp && typeof value === "number" && Number.isFinite(value)) {
+      const op = numericCmp[1];
+      const target = Number.parseFloat(numericCmp[2]);
+      if (!Number.isFinite(target)) return true;
+      if (op === ">") return value > target;
+      if (op === "<") return value < target;
+      if (op === ">=") return value >= target;
+      if (op === "<=") return value <= target;
+      if (op === "=") return value === target;
+      if (op === "!=") return value !== target;
+    }
+
+    return String(value ?? "").toLowerCase().includes(ft.toLowerCase());
+  }, []);
+
   useEffect(() => {
     if (!objectives.length || !rows.length) return;
     const newRanges = {};
@@ -540,8 +572,8 @@ export default function ParetoApp() {
   const sortedData = useMemo(() => {
     let all = fronts.flat();
     for (const col of headers) {
-      const ft = (filterText[col] || "").toLowerCase();
-      if (ft) all = all.filter(r => String(r[col]).toLowerCase().includes(ft));
+      const ft = (filterText[col] || "").trim();
+      if (ft) all = all.filter(r => matchesFilter(r[col], ft));
     }
     if (showOnlyPareto) all = all.filter(r => r._front === 0);
     if (objectives.length) {
@@ -555,7 +587,7 @@ export default function ParetoApp() {
       });
     }
     return all;
-  }, [fronts, filterText, sortCol, sortAsc, showOnlyPareto, weights, objectives, directions, colStats, headers]);
+  }, [fronts, filterText, sortCol, sortAsc, showOnlyPareto, weights, objectives, directions, colStats, headers, matchesFilter]);
 
   const availableFronts = useMemo(() => {
     return Array.from(new Set(fronts.flat().map(r => r._front).filter(f => f !== undefined))).sort((a, b) => a - b);
@@ -651,6 +683,33 @@ export default function ParetoApp() {
   const shownParetoCount = useMemo(() => visibleData.filter(r => r._front === 0).length, [visibleData]);
   const visibleFrontCount = useMemo(() => availableFronts.filter(f => visibleFronts[f] !== false).length, [availableFronts, visibleFronts]);
   const hasScore = objectives.some(o => (weights[o] || 0) > 0);
+
+  const getColWidth = useCallback((col) => {
+    if (colWidths[col] !== undefined) return colWidths[col];
+    return typeof rows[0]?.[col] === "number" ? 84 : 116;
+  }, [colWidths, rows]);
+
+  const startColumnResize = useCallback((col, ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const th = ev.currentTarget.parentElement;
+    const startX = ev.clientX;
+    const startWidth = th?.getBoundingClientRect().width || getColWidth(col);
+
+    const onMove = (moveEv) => {
+      const delta = moveEv.clientX - startX;
+      const next = Math.max(70, Math.round(startWidth + delta));
+      setColWidths(prev => ({ ...prev, [col]: next }));
+    };
+
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [getColWidth]);
 
   if (importDraft) {
     return (
@@ -1039,7 +1098,15 @@ export default function ParetoApp() {
           {tab === "table" && (
             <div style={{ padding: 10 }}>
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: 11, fontFamily: FM }}>
+                <table style={{ width: "max-content", borderCollapse: "separate", borderSpacing: 0, fontSize: 11, fontFamily: FM }}>
+                  <colgroup>
+                    <col style={{ width: 34 }} />
+                    <col style={{ width: 48 }} />
+                    {displayCols.map(col => (
+                      <col key={col} style={{ width: getColWidth(col) }} />
+                    ))}
+                    {hasScore && <col style={{ width: getColWidth("_score") }} />}
+                  </colgroup>
                   <thead>
                     <tr>
                       <th style={{ position: "sticky", top: 0, zIndex: 2, padding: "6px 4px", textAlign: "center", background: C.surface, borderBottom: `2px solid ${C.border}`, color: C.textDim, fontSize: 9, width: 30 }}>#</th>
@@ -1050,26 +1117,43 @@ export default function ParetoApp() {
                           textAlign: typeof rows[0]?.[col] === "number" ? "right" : "left",
                           background: C.surface, borderBottom: `2px solid ${C.border}`,
                           color: objectives.includes(col) ? C.accent : C.textMuted,
-                          cursor: "pointer", fontSize: 9, whiteSpace: "nowrap", userSelect: "none",
+                          cursor: "pointer", fontSize: 9, whiteSpace: "nowrap", userSelect: "none", position: "sticky",
                         }}>
                           {col} {sortCol === col ? (sortAsc ? "▲" : "▼") : ""}
                           {objectives.includes(col) && <span style={{ color: directions[col] === "min" ? C.dominated : C.front0, marginLeft: 3 }}>{directions[col] === "min" ? "↓" : "↑"}</span>}
+                          <span
+                            onMouseDown={(e) => startColumnResize(col, e)}
+                            title="Drag to resize column"
+                            style={{ position: "absolute", top: 0, right: 0, width: 6, height: "100%", cursor: "col-resize", background: "transparent" }}
+                          />
                         </th>
                       ))}
                       {hasScore && (
                         <th onClick={() => handleSort("_score")} style={{
                           position: "sticky", top: 0, zIndex: 2, padding: "6px 6px", textAlign: "right",
                           background: C.surface, borderBottom: `2px solid ${C.border}`,
-                          color: C.highlight, cursor: "pointer", fontSize: 9, whiteSpace: "nowrap",
-                        }}>Score {sortCol === "_score" ? (sortAsc ? "▲" : "▼") : ""}</th>
+                          color: C.highlight, cursor: "pointer", fontSize: 9, whiteSpace: "nowrap", position: "sticky",
+                        }}>
+                          Preference Score {sortCol === "_score" ? (sortAsc ? "▲" : "▼") : ""}
+                          <span
+                            onMouseDown={(e) => startColumnResize("_score", e)}
+                            title="Drag to resize column"
+                            style={{ position: "absolute", top: 0, right: 0, width: 6, height: "100%", cursor: "col-resize", background: "transparent" }}
+                          />
+                        </th>
                       )}
                     </tr>
                     <tr>
-                      <td style={{ background: C.surfaceAlt, padding: 1, borderBottom: `1px solid ${C.border}` }} />
-                      <td style={{ background: C.surfaceAlt, padding: 1, borderBottom: `1px solid ${C.border}` }} />
+                      <td style={{ background: C.surfaceAlt, padding: "1px 3px", borderBottom: `1px solid ${C.border}`, color: C.textDim, fontSize: 9, textAlign: "center" }} title="Row index (not a filter)">
+                        Row #
+                      </td>
+                      <td style={{ background: C.surfaceAlt, padding: "1px 3px", borderBottom: `1px solid ${C.border}`, color: C.textDim, fontSize: 9, textAlign: "center" }} title="Front badge column (not a text filter)">
+                        Front
+                      </td>
                       {displayCols.map(col => (
                         <td key={col} style={{ background: C.surfaceAlt, padding: "1px 3px", borderBottom: `1px solid ${C.border}` }}>
-                          <input placeholder="…" value={filterText[col] || ""}
+                          <input placeholder={`filter ${col}`} value={filterText[col] || ""}
+                            title={`Filter ${col}. Text uses contains match (e.g. alpha, 649). Numeric columns support >, <, >=, <=, =, != (e.g. > 3.4) and inclusive ranges like 3.4..5.0.`}
                             onChange={e => setFilterText(p => ({ ...p, [col]: e.target.value }))}
                             style={{ width: "100%", padding: "1px 3px", borderRadius: 3, border: `1px solid ${C.border}`, background: C.bg, color: C.text, fontSize: 9, fontFamily: FM, outline: "none", boxSizing: "border-box" }} />
                         </td>

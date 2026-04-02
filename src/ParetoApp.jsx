@@ -38,7 +38,7 @@ function parseCSV(text) {
     if (/(decision|decisions|policy|policies|variable|variables|input|inputs|lever|levers)/.test(v)) {
       return "decision";
     }
-    if (/(objective|objectives|outcome|outcomes|metric|metrics|goal|goals)/.test(v)) {
+    if (/(objective|objectives|outcome|outcomes|metric|metrics|goal|goals|reliability)/.test(v)) {
       return "objective";
     }
     return null;
@@ -81,6 +81,17 @@ function parseCSV(text) {
     });
   };
 
+  const roleBandsForRow = (cells) => {
+    const bands = [];
+    let activeRole = null;
+    cells.forEach((cell, idx) => {
+      const inferred = inferRole(cell);
+      if (inferred) activeRole = inferred;
+      bands[idx] = activeRole;
+    });
+    return bands;
+  };
+
   const parsedLines = lines.map(split);
   const first = parsedLines[0] || [];
   const second = parsedLines[1] || [];
@@ -99,8 +110,9 @@ function parseCSV(text) {
   if (hasDualHeader) {
     headers = makeUniqueHeaders(second);
     dataStart = 2;
+    const roleBands = roleBandsForRow(first);
     headers.forEach((h, j) => {
-      const inferred = inferRole(first[j]) || inferRole(second[j]);
+      const inferred = roleBands[j] || inferRole(second[j]);
       if (inferred) columnRoles[h] = inferred;
     });
   } else {
@@ -456,9 +468,15 @@ export default function ParetoApp() {
     const sc = h.filter(col => r.some(row => typeof row[col] === "string" && row[col] !== ""));
     const decisionCandidates = h.filter(col => (columnRoles || {})[col] === "decision");
     const objectiveCandidates = h.filter(col => (columnRoles || {})[col] === "objective");
+    const idLikeCol = h.find(col => /(^|\s)(solution\s*id|solutionid|id|name)(\s|$)/i.test(String(col)));
 
     const resolvedObjectives = objectiveCandidates.filter(col => nc.includes(col));
-    const resolvedDecision = decisionCandidates.find(col => sc.includes(col)) || sc[0] || null;
+    const resolvedDecision =
+      idLikeCol ||
+      decisionCandidates.find(col => sc.includes(col)) ||
+      decisionCandidates[0] ||
+      sc[0] ||
+      null;
 
     setDecisionCol(resolvedDecision);
     setObjectives(resolvedObjectives.length ? resolvedObjectives : nc);

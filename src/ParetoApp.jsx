@@ -423,6 +423,15 @@ Nu-13,37000,70,0.88,95,270
 Xi-14,51000,86,0.94,128,420
 Omicron-15,61000,92,0.97,142,500`;
 
+const DEFAULT_CATEGORY_ORDER = ["solution", "decision", "objective", "constraint", "metric"];
+const CATEGORY_LABELS = {
+  solution: "Solution ID",
+  decision: "Decision Variables",
+  objective: "Objectives",
+  constraint: "Constraints",
+  metric: "Metrics",
+};
+
 export default function ParetoApp() {
   const [headers, setHeaders] = useState([]);
   const [rows, setRows] = useState([]);
@@ -441,17 +450,60 @@ export default function ParetoApp() {
   const [showOnlyPareto, setShowOnlyPareto] = useState(false);
   const [decisionCol, setDecisionCol] = useState(null);
   const [decisionCols, setDecisionCols] = useState([]);
+  const [columnCategories, setColumnCategories] = useState({});
+  const [categoryOrder, setCategoryOrder] = useState(DEFAULT_CATEGORY_ORDER);
   const [visibleFronts, setVisibleFronts] = useState({});
   const [sourceLabel, setSourceLabel] = useState("Uploaded CSV");
+  const [importDraft, setImportDraft] = useState(null);
+  const [newCategoryName, setNewCategoryName] = useState("");
   const [loaded, setLoaded] = useState(false);
   const fileRef = useRef(null);
 
   const numericCols = useMemo(() => headers.filter(h => rows.some(r => typeof r[h] === "number")), [headers, rows]);
   const stringCols = useMemo(() => headers.filter(h => rows.some(r => typeof r[h] === "string" && r[h] !== "")), [headers, rows]);
+  const columnsByCategory = useMemo(() => {
+    const grouped = {};
+    headers.forEach(h => {
+      const cat = columnCategories[h] || "metric";
+      if (!grouped[cat]) grouped[cat] = [];
+      grouped[cat].push(h);
+    });
+    return grouped;
+  }, [headers, columnCategories]);
+  const solutionCols = columnsByCategory.solution || [];
+  const decisionCategoryCols = columnsByCategory.decision || [];
+  const objectiveCategoryCols = columnsByCategory.objective || [];
+  const constraintCols = columnsByCategory.constraint || [];
+  const metricCols = columnsByCategory.metric || [];
+  const customCategoryEntries = useMemo(() => {
+    return categoryOrder
+      .filter(cat => !DEFAULT_CATEGORY_ORDER.includes(cat))
+      .map(cat => ({ category: cat, columns: columnsByCategory[cat] || [] }))
+      .filter(entry => entry.columns.length > 0);
+  }, [categoryOrder, columnsByCategory]);
   const labelCols = useMemo(() => {
-    const idLikeNumericCols = numericCols.filter(col => /(^|\s)(solution\s*id|solutionid|id|name)(\s|$)/i.test(String(col)));
+    if (solutionCols.length) return solutionCols;
+    const idLikeNumericCols = numericCols.filter(col => /(^|\s)(solution\s*id|solutionid|id|name|label)(\s|$)/i.test(String(col)));
     return Array.from(new Set([...stringCols, ...idLikeNumericCols]));
-  }, [stringCols, numericCols]);
+  }, [solutionCols, stringCols, numericCols]);
+
+  const suggestCategory = useCallback((header, roleHint) => {
+    const h = String(header || "").toLowerCase();
+    if (/(solution\s*id|solutionid|^id$|\bname\b|label)/.test(h)) return "solution";
+    if (roleHint === "decision" || /(decision|policy|input|lever|variable)/.test(h)) return "decision";
+    if (roleHint === "objective" || /(objective|reliability|outcome|goal|benefit)/.test(h)) return "objective";
+    if (/(constraint|bound|limit|cap|threshold|feasible|violation)/.test(h)) return "constraint";
+    return "metric";
+  }, []);
+
+  const inferColumnType = useCallback((col, dataRows) => {
+    const vals = dataRows.map(r => r[col]).filter(v => v !== "" && v !== null && v !== undefined);
+    if (!vals.length) return "empty";
+    const numCount = vals.filter(v => typeof v === "number" && Number.isFinite(v)).length;
+    if (numCount === vals.length) return "numeric";
+    if (numCount === 0) return "text";
+    return "mixed";
+  }, []);
 
   const colStats = useMemo(() => {
     const s = {};
@@ -526,92 +578,68 @@ export default function ParetoApp() {
     });
   }, [sortedData, visibleFronts]);
 
-  const inferredDecisionCols = useMemo(() => {
-    const roleBased = headers.filter(h => (columnRoleHints || {})[h] === "decision");
-    if (roleBased.length) {
-      return roleBased.filter(h => h !== decisionCol && !objectives.includes(h));
-    }
-    const objectiveIdx = objectives.map(o => headers.indexOf(o)).filter(i => i >= 0);
-    const firstObjectiveIdx = objectiveIdx.length ? Math.min(...objectiveIdx) : -1;
-    if (firstObjectiveIdx > 0) {
-      return headers.slice(0, firstObjectiveIdx).filter(h => h !== decisionCol && !objectives.includes(h));
-    }
-    return [];
-  }, [headers, columnRoleHints, decisionCol, objectives]);
-
-  useEffect(() => {
-    setDecisionCols(prev => {
-      const valid = prev.filter(col => headers.includes(col) && col !== decisionCol && !objectives.includes(col));
-      return valid.length ? valid : inferredDecisionCols;
-    });
-  }, [headers, decisionCol, objectives, inferredDecisionCols]);
-
-  const loadData = useCallback((csvText, sourceName = "Uploaded CSV") => {
+  const startImportSetup = useCallback((csvText, sourceName = "Uploaded CSV") => {
     const { headers: h, rows: r, columnRoles } = parseCSV(csvText);
-    setHeaders(h); setRows(r);
-    setSourceLabel(sourceName);
-    setColumnRoleHints(columnRoles || {});
-    const nc = h.filter(col => r.some(row => typeof row[col] === "number"));
-    const sc = h.filter(col => r.some(row => typeof row[col] === "string" && row[col] !== ""));
-    const decisionCandidates = h.filter(col => (columnRoles || {})[col] === "decision");
-    const objectiveCandidates = h.filter(col => (columnRoles || {})[col] === "objective");
-    const idLikeCol = h.find(col => /(^|\s)(solution\s*id|solutionid|id|name)(\s|$)/i.test(String(col)));
+    const inferredCategories = {};
+    const inferredTypes = {};
+    h.forEach(col => {
+      inferredCategories[col] = suggestCategory(col, (columnRoles || {})[col] || null);
+      inferredTypes[col] = inferColumnType(col, r);
+    });
+    setImportDraft({
+      headers: h,
+      rows: r,
+      columnRoles: columnRoles || {},
+      sourceName,
+      assignments: inferredCategories,
+      columnTypes: inferredTypes,
+      categories: [...DEFAULT_CATEGORY_ORDER],
+    });
+    setLoaded(false);
+  }, [suggestCategory, inferColumnType]);
 
-    const resolvedObjectives = objectiveCandidates.filter(col => nc.includes(col));
-    const resolvedDecision =
-      idLikeCol ||
-      decisionCandidates.find(col => sc.includes(col)) ||
-      decisionCandidates[0] ||
-      sc[0] ||
-      null;
-    const resolvedDecisionCols =
-      decisionCandidates.length
-        ? decisionCandidates.filter(col => col !== resolvedDecision)
-        : (() => {
-            const objectiveIdx = resolvedObjectives.map(o => h.indexOf(o)).filter(i => i >= 0);
-            const firstObjectiveIdx = objectiveIdx.length ? Math.min(...objectiveIdx) : -1;
-            if (firstObjectiveIdx > 0) {
-              return h.slice(0, firstObjectiveIdx).filter(col => col !== resolvedDecision);
-            }
-            return [];
-          })();
+  const applyImportSetup = useCallback(() => {
+    if (!importDraft) return;
+    const h = importDraft.headers;
+    const r = importDraft.rows;
+    const assignments = importDraft.assignments || {};
+    const categories = importDraft.categories?.length ? importDraft.categories : [...DEFAULT_CATEGORY_ORDER];
+
+    setHeaders(h); setRows(r);
+    setSourceLabel(importDraft.sourceName || "Uploaded CSV");
+    setColumnRoleHints(importDraft.columnRoles || {});
+    setColumnCategories(assignments);
+    setCategoryOrder(categories);
+
+    const nc = h.filter(col => r.some(row => typeof row[col] === "number"));
+    const resolvedSolutionCols = h.filter(col => assignments[col] === "solution");
+    const resolvedDecision = resolvedSolutionCols[0] || h.find(col => /(^|\s)(solution\s*id|solutionid|id|name|label)(\s|$)/i.test(String(col))) || null;
+    const resolvedDecisionCols = h.filter(col => assignments[col] === "decision" && col !== resolvedDecision);
+    const resolvedObjectives = h.filter(col => assignments[col] === "objective" && nc.includes(col));
 
     setDecisionCol(resolvedDecision);
     setDecisionCols(resolvedDecisionCols);
-    setObjectives(resolvedObjectives.length ? resolvedObjectives : nc);
+    setObjectives(resolvedObjectives);
     const dirs = {}; nc.forEach(c => dirs[c] = "min");
     setDirections(dirs);
     const w = {}; nc.forEach(c => w[c] = 1);
     setWeights(w);
     setFilterText({}); setSortCol(null); setLoaded(true); setTab("table");
-  }, []);
+    setImportDraft(null);
+  }, [importDraft]);
 
   const handleFile = useCallback((e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => loadData(ev.target.result, file.name);
+    reader.onload = (ev) => startImportSetup(ev.target.result, file.name);
     reader.readAsText(file);
-  }, [loadData]);
+  }, [startImportSetup]);
 
   const loadDemo = useCallback(() => {
-    const d = { ...parseCSV(DEMO) };
-    setHeaders(d.headers); setRows(d.rows);
-    setSourceLabel("Demo Data");
-    setColumnRoleHints(d.columnRoles || {});
-    setDecisionCol("Decision");
-    setDecisionCols([]);
-    const nc = d.headers.filter(col => d.rows.some(row => typeof row[col] === "number"));
-    setObjectives(nc);
-    const dirs = {}; nc.forEach(c => dirs[c] = c === "Cost" || c === "Weight" ? "min" : "max");
-    setDirections(dirs);
-    const w = {}; nc.forEach(c => w[c] = 1);
-    setWeights(w);
-    setFilterText({}); setSortCol(null); setLoaded(true); setTab("table");
-  }, []);
+    startImportSetup(DEMO, "Demo Data");
+  }, [startImportSetup]);
 
-  const toggleObj = useCallback(col => setObjectives(p => p.includes(col) ? p.filter(c => c !== col) : [...p, col]), []);
-  const toggleDecision = useCallback(col => setDecisionCols(p => p.includes(col) ? p.filter(c => c !== col) : [...p, col]), []);
   const toggleDir = useCallback(col => setDirections(p => ({ ...p, [col]: p[col] === "min" ? "max" : "min" })), []);
   const handleSort = useCallback(col => {
     if (sortCol === col) setSortAsc(p => !p);
@@ -623,6 +651,92 @@ export default function ParetoApp() {
   const shownParetoCount = useMemo(() => visibleData.filter(r => r._front === 0).length, [visibleData]);
   const visibleFrontCount = useMemo(() => availableFronts.filter(f => visibleFronts[f] !== false).length, [availableFronts, visibleFronts]);
   const hasScore = objectives.some(o => (weights[o] || 0) > 0);
+
+  if (importDraft) {
+    return (
+      <div style={{ fontFamily: FB, background: C.bg, color: C.text, minHeight: "100vh", padding: 20 }}>
+        <div style={{ maxWidth: 1080, margin: "0 auto" }}>
+          <h2 style={{ fontFamily: FM, fontSize: 18, color: C.accent, marginBottom: 8 }}>Import Setup</h2>
+          <p style={{ color: C.textMuted, fontSize: 12, marginBottom: 12 }}>
+            Review each column and confirm its category before loading the analysis views.
+          </p>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+            <span style={{ color: C.textMuted, fontFamily: FM, fontSize: 11 }}>Source</span>
+            <span style={{ color: C.highlight, fontFamily: FM, fontSize: 11 }}>{importDraft.sourceName}</span>
+            <div style={{ flex: 1 }} />
+            <input
+              value={newCategoryName}
+              onChange={e => setNewCategoryName(e.target.value)}
+              placeholder="new category"
+              style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontFamily: FM, fontSize: 11 }}
+            />
+            <button
+              onClick={() => {
+                const raw = newCategoryName.trim().toLowerCase();
+                const normalized = raw.replace(/\s+/g, "_");
+                if (!normalized || importDraft.categories.includes(normalized)) return;
+                setImportDraft(prev => ({ ...prev, categories: [...prev.categories, normalized] }));
+                setNewCategoryName("");
+              }}
+              style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surfaceAlt, color: C.accent, fontFamily: FM, fontSize: 11, cursor: "pointer" }}
+            >
+              Add Category
+            </button>
+          </div>
+          <div style={{ maxWidth: 860, margin: "0 auto", overflowX: "auto", border: `1px solid ${C.border}`, borderRadius: 8, background: C.surface }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, fontFamily: FM }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                  <th style={{ textAlign: "left", padding: "8px 10px", color: C.textMuted }}>Column</th>
+                  <th style={{ textAlign: "center", padding: "8px 10px", color: C.textMuted }}>Category</th>
+                  <th style={{ textAlign: "center", padding: "8px 10px", color: C.textMuted }}>Detected Type</th>
+                </tr>
+              </thead>
+              <tbody>
+                {importDraft.headers.map(col => (
+                  <tr key={col} style={{ borderBottom: `1px solid ${C.border}22` }}>
+                    <td style={{ padding: "6px 10px", color: C.text }}>{col}</td>
+                    <td style={{ padding: "6px 10px", textAlign: "center" }}>
+                      <select
+                        value={importDraft.assignments[col] || "metric"}
+                        onChange={e => {
+                          const next = e.target.value;
+                          setImportDraft(prev => ({
+                            ...prev,
+                            assignments: { ...prev.assignments, [col]: next },
+                          }));
+                        }}
+                        style={{ padding: "2px 6px", borderRadius: 4, border: `1px solid ${C.border}`, background: C.surfaceAlt, color: C.text, fontFamily: FM, fontSize: 11 }}
+                      >
+                        {importDraft.categories.map(cat => (
+                          <option key={cat} value={cat}>{CATEGORY_LABELS[cat] || cat}</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td style={{ padding: "6px 10px", textAlign: "center", color: C.textMuted }}>{importDraft.columnTypes[col]}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+            <button
+              onClick={() => setImportDraft(null)}
+              style={{ padding: "8px 12px", borderRadius: 6, border: `1px solid ${C.border}`, background: "transparent", color: C.textMuted, fontFamily: FM, fontSize: 11, cursor: "pointer" }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={applyImportSetup}
+              style={{ padding: "8px 12px", borderRadius: 6, border: `1px solid ${C.accent}`, background: C.accentDim, color: C.accent, fontFamily: FM, fontSize: 11, cursor: "pointer" }}
+            >
+              Apply Categories
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!loaded) {
     return (
@@ -658,6 +772,9 @@ export default function ParetoApp() {
     ...(decisionCol ? [decisionCol] : []),
     ...decisionCols,
     ...objectives,
+    ...constraintCols,
+    ...metricCols,
+    ...customCategoryEntries.flatMap(entry => entry.columns),
   ])).filter(col => headers.includes(col));
 
   return (
@@ -711,27 +828,27 @@ export default function ParetoApp() {
           <div style={{ marginBottom: 18 }}>
             <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>DECISIONS</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-              {headers.filter(col => col !== decisionCol && !objectives.includes(col)).map(col => (
-                <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={decisionCols.includes(col)} onClick={() => toggleDecision(col)} color={C.front1} />
+              {decisionCols.map(col => (
+                <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={C.front1} />
               ))}
+              {decisionCols.length === 0 && <span style={{ fontSize: 9, color: C.textDim }}>No decision variables assigned.</span>}
             </div>
           </div>
 
           <div style={{ marginBottom: 18 }}>
             <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>OBJECTIVES</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-              {numericCols.map(col => (
+              {objectives.map(col => (
                 <div key={col} style={{ display: "flex", alignItems: "center", gap: 3 }}>
-                  <Chip label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={objectives.includes(col)} onClick={() => toggleObj(col)} />
-                  {objectives.includes(col) && (
-                    <button onClick={() => toggleDir(col)} style={{
-                      padding: "2px 5px", borderRadius: 4, fontSize: 9, fontFamily: FM,
-                      border: `1px solid ${C.border}`, background: "transparent",
-                      color: directions[col] === "min" ? C.dominated : C.front0, cursor: "pointer",
-                    }}>{directions[col] === "min" ? "▼min" : "▲max"}</button>
-                  )}
+                  <Chip label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} />
+                  <button onClick={() => toggleDir(col)} style={{
+                    padding: "2px 5px", borderRadius: 4, fontSize: 9, fontFamily: FM,
+                    border: `1px solid ${C.border}`, background: "transparent",
+                    color: directions[col] === "min" ? C.dominated : C.front0, cursor: "pointer",
+                  }}>{directions[col] === "min" ? "▼min" : "▲max"}</button>
                 </div>
               ))}
+              {objectives.length === 0 && <span style={{ fontSize: 9, color: C.textDim }}>No objectives assigned.</span>}
             </div>
           </div>
 
@@ -766,6 +883,39 @@ export default function ParetoApp() {
               Direction-aware normalized aggregate. Higher weight = more important.
             </p>
           </div>
+
+          {!!constraintCols.length && (
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>CONSTRAINTS</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                {constraintCols.map(col => (
+                  <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={C.dominated} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!!metricCols.length && (
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>METRICS</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                {metricCols.map(col => (
+                  <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={C.textMuted} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {customCategoryEntries.map(entry => (
+            <div key={entry.category} style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>{String(entry.category).toUpperCase()}</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                {entry.columns.map(col => (
+                  <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={C.highlight} />
+                ))}
+              </div>
+            </div>
+          ))}
 
           <div style={{ marginBottom: 18 }}>
             <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>VISIBLE FRONTS</div>
@@ -802,12 +952,26 @@ export default function ParetoApp() {
             <div style={{ padding: 20, maxWidth: 720 }}>
               <h2 style={{ fontFamily: FM, fontSize: 15, color: C.accent, marginBottom: 14 }}>Column Configuration</h2>
               <p style={{ fontSize: 12, color: C.textMuted, marginBottom: 16, lineHeight: 1.5 }}>
-                Toggle objectives, set optimization direction, and assign weights.
+                Categories are set during import setup. Use this view for objective direction and weight tuning.
               </p>
+              <button
+                onClick={() => setImportDraft({
+                  headers,
+                  rows,
+                  columnRoles: columnRoleHints,
+                  sourceName: sourceLabel,
+                  assignments: { ...columnCategories },
+                  columnTypes: Object.fromEntries(headers.map(h => [h, inferColumnType(h, rows)])),
+                  categories: [...categoryOrder],
+                })}
+                style={{ marginBottom: 12, padding: "5px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surfaceAlt, color: C.accent, fontFamily: FM, fontSize: 11, cursor: "pointer" }}
+              >
+                Reopen Import Setup
+              </button>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, fontFamily: FM }}>
                 <thead>
                   <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-                    {["Column", "Type", "Header Role", "Objective?", "Direction", "Weight"].map(h => (
+                    {["Column", "Type", "Category", "Direction", "Weight"].map(h => (
                       <th key={h} style={{ textAlign: h === "Column" ? "left" : "center", padding: "6px 10px", color: C.textMuted }}>{h}</th>
                     ))}
                   </tr>
@@ -815,15 +979,12 @@ export default function ParetoApp() {
                 <tbody>
                   {headers.map(h => {
                     const isNum = numericCols.includes(h), isObj = objectives.includes(h);
-                    const roleHint = columnRoleHints[h] || "-";
+                    const category = columnCategories[h] || "metric";
                     return (
                       <tr key={h} style={{ borderBottom: `1px solid ${C.border}22` }}>
                         <td style={{ padding: "5px 10px", color: C.text }}>{h}</td>
                         <td style={{ padding: "5px 10px", textAlign: "center", color: isNum ? C.front1 : C.textDim }}>{isNum ? "numeric" : "text"}</td>
-                        <td style={{ padding: "5px 10px", textAlign: "center", color: roleHint === "-" ? C.textDim : (roleHint === "objective" ? C.accent : C.highlight) }}>{roleHint}</td>
-                        <td style={{ padding: "5px 10px", textAlign: "center" }}>
-                          {isNum && <input type="checkbox" checked={isObj} onChange={() => toggleObj(h)} style={{ accentColor: C.accent }} />}
-                        </td>
+                        <td style={{ padding: "5px 10px", textAlign: "center", color: isObj ? C.accent : C.textDim }}>{CATEGORY_LABELS[category] || category}</td>
                         <td style={{ padding: "5px 10px", textAlign: "center" }}>
                           {isObj && (
                             <button onClick={() => toggleDir(h)} style={{
@@ -855,7 +1016,7 @@ export default function ParetoApp() {
                   Drag on axes to brush/filter · Hover lines to inspect · Pareto-style linked interaction
                 </div>
                 <div style={{ fontSize: 9, fontFamily: FM, color: C.textDim, marginBottom: 8 }}>
-                  Axes reflect active selections from Label Column, Decisions, and Objectives.
+                  Axes reflect categorized columns from Label, Decisions, Objectives, Constraints, Metrics, and custom groups.
                 </div>
                 {displayCols.length > 0 ? (
                   <ParCoords data={visibleData} axes={displayCols} directions={directions} highlightId={highlightId} onHover={setHighlightId} />

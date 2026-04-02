@@ -442,6 +442,7 @@ export default function ParetoApp() {
   const [decisionCol, setDecisionCol] = useState(null);
   const [decisionCols, setDecisionCols] = useState([]);
   const [visibleFronts, setVisibleFronts] = useState({});
+  const [sourceLabel, setSourceLabel] = useState("Uploaded CSV");
   const [loaded, setLoaded] = useState(false);
   const fileRef = useRef(null);
 
@@ -545,9 +546,10 @@ export default function ParetoApp() {
     });
   }, [headers, decisionCol, objectives, inferredDecisionCols]);
 
-  const loadData = useCallback((csvText) => {
+  const loadData = useCallback((csvText, sourceName = "Uploaded CSV") => {
     const { headers: h, rows: r, columnRoles } = parseCSV(csvText);
     setHeaders(h); setRows(r);
+    setSourceLabel(sourceName);
     setColumnRoleHints(columnRoles || {});
     const nc = h.filter(col => r.some(row => typeof row[col] === "number"));
     const sc = h.filter(col => r.some(row => typeof row[col] === "string" && row[col] !== ""));
@@ -588,13 +590,14 @@ export default function ParetoApp() {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => loadData(ev.target.result);
+    reader.onload = (ev) => loadData(ev.target.result, file.name);
     reader.readAsText(file);
   }, [loadData]);
 
   const loadDemo = useCallback(() => {
     const d = { ...parseCSV(DEMO) };
     setHeaders(d.headers); setRows(d.rows);
+    setSourceLabel("Demo Data");
     setColumnRoleHints(d.columnRoles || {});
     setDecisionCol("Decision");
     setDecisionCols([]);
@@ -616,6 +619,9 @@ export default function ParetoApp() {
   }, [sortCol]);
 
   const paretoCount = useMemo(() => fronts[0]?.length || 0, [fronts]);
+  const shownCount = useMemo(() => visibleData.length, [visibleData]);
+  const shownParetoCount = useMemo(() => visibleData.filter(r => r._front === 0).length, [visibleData]);
+  const visibleFrontCount = useMemo(() => availableFronts.filter(f => visibleFronts[f] !== false).length, [availableFronts, visibleFronts]);
   const hasScore = objectives.some(o => (weights[o] || 0) > 0);
 
   if (!loaded) {
@@ -679,10 +685,12 @@ export default function ParetoApp() {
 
       {/* Stats */}
       <div style={{ background: C.surfaceAlt, borderBottom: `1px solid ${C.border}`, padding: "6px 16px", display: "flex", gap: 16, fontSize: 11, fontFamily: FM, flexWrap: "wrap", alignItems: "center" }}>
-        <span style={{ color: C.textMuted }}>Rows <span style={{ color: C.text }}>{rows.length}</span></span>
+        <span style={{ color: C.textMuted }}>Total Solutions <span style={{ color: C.text }}>{rows.length}</span></span>
+        <span style={{ color: C.textMuted }}>Shown <span style={{ color: C.accent }}>{shownCount}</span><span style={{ color: C.textDim }}> / {rows.length}</span></span>
+        <span style={{ color: C.textMuted }}>Pareto <span style={{ color: C.front0 }}>{shownParetoCount}</span><span style={{ color: C.textDim }}> / {paretoCount}</span></span>
+        <span style={{ color: C.textMuted }}>Fronts <span style={{ color: C.text }}>{visibleFrontCount}</span><span style={{ color: C.textDim }}> / {fronts.length}</span></span>
         <span style={{ color: C.textMuted }}>Obj <span style={{ color: C.accent }}>{objectives.length}</span></span>
-        <span style={{ color: C.textMuted }}>Pareto <span style={{ color: C.front0 }}>{paretoCount}</span></span>
-        <span style={{ color: C.textMuted }}>Fronts <span style={{ color: C.text }}>{fronts.length}</span></span>
+        <span style={{ color: C.textMuted }}>Source <span style={{ color: C.highlight }}>{sourceLabel}</span></span>
         <div style={{ flex: 1 }} />
         <Chip label={showOnlyPareto ? "Pareto Only ✓" : "Show All"} active={showOnlyPareto} onClick={() => setShowOnlyPareto(p => !p)} />
         <Chip label={condFormat ? "Heatmap ✓" : "Heatmap"} active={condFormat} onClick={() => setCondFormat(p => !p)} />

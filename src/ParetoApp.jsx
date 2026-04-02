@@ -407,6 +407,10 @@ export default function ParetoApp() {
 
   const numericCols = useMemo(() => headers.filter(h => rows.some(r => typeof r[h] === "number")), [headers, rows]);
   const stringCols = useMemo(() => headers.filter(h => rows.some(r => typeof r[h] === "string" && r[h] !== "")), [headers, rows]);
+  const labelCols = useMemo(() => {
+    const idLikeNumericCols = numericCols.filter(col => /(^|\s)(solution\s*id|solutionid|id|name)(\s|$)/i.test(String(col)));
+    return Array.from(new Set([...stringCols, ...idLikeNumericCols]));
+  }, [stringCols, numericCols]);
 
   const colStats = useMemo(() => {
     const s = {};
@@ -632,7 +636,7 @@ export default function ParetoApp() {
           <div style={{ marginBottom: 18 }}>
             <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>LABEL COLUMN</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-              {stringCols.map(col => (
+              {labelCols.map(col => (
                 <Chip key={col} label={col} active={decisionCol === col} onClick={() => setDecisionCol(col === decisionCol ? null : col)} color={C.highlight} />
               ))}
             </div>

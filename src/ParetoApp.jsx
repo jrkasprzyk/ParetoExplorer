@@ -976,6 +976,9 @@ export default function ParetoApp() {
           </div>
 
           <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 13, fontFamily: FM, color: CATEGORY_COLORS.objective, marginBottom: 8, fontWeight: 700, letterSpacing: 0.6 }}>
+              OBJECTIVE CONTROLS
+            </div>
             <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>PARALLEL ORIENTATION</div>
             <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
               <Chip
@@ -991,7 +994,7 @@ export default function ParetoApp() {
                 color={C.highlight}
               />
             </div>
-            <p style={{ fontSize: 9, color: C.textDim, marginTop: 4, lineHeight: 1.3 }}>
+            <p style={{ fontSize: 9, color: CATEGORY_COLORS.objective, marginTop: 4, lineHeight: 1.3 }}>
               Objective axes flip automatically so the preferred direction (min/max) points toward the selected edge.
             </p>
           </div>
@@ -1204,7 +1207,7 @@ export default function ParetoApp() {
                 <div style={{ fontSize: 9, fontFamily: FM, color: C.textDim, marginBottom: 8 }}>
                   Axes reflect categorized columns from Label, Decisions, Objectives, Constraints, Metrics, and custom groups.
                 </div>
-                <div style={{ fontSize: 9, fontFamily: FM, color: C.highlight, marginBottom: 8 }}>
+                <div style={{ fontSize: 9, fontFamily: FM, color: CATEGORY_COLORS.objective, marginBottom: 8 }}>
                   Orientation: preferred objective direction is toward the {preferredObjectiveEdge === "top" ? "top" : "bottom"} edge.
                 </div>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8, fontSize: 9, fontFamily: FM }}>

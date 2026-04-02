@@ -197,7 +197,7 @@ function frontColor(f) {
   return [C.front0, C.front1, C.front2, C.front3][f] || C.frontN;
 }
 
-function ParCoords({ data, axes, directions, objectives, preferredObjectiveEdge, highlightId, onHover }) {
+function ParCoords({ data, axes, directions, objectives, preferredObjectiveEdge, columnCategories, highlightId, onHover }) {
   const svgRef = useRef(null);
   const containerRef = useRef(null);
   const [dims, setDims] = useState({ w: 800, h: 370 });
@@ -253,7 +253,9 @@ function ParCoords({ data, axes, directions, objectives, preferredObjectiveEdge,
     axes.forEach(ax => {
       const xP = x(ax);
       const ag = g.append("g").attr("transform", `translate(${xP},0)`);
-      ag.append("line").attr("y1", 0).attr("y2", h).attr("stroke", C.border).attr("stroke-width", 1);
+      const axisCategory = columnCategories[ax] || "metric";
+      const axisColor = CATEGORY_COLORS[axisCategory] || C.textMuted;
+      ag.append("line").attr("y1", 0).attr("y2", h).attr("stroke", axisColor).attr("stroke-opacity", 0.55).attr("stroke-width", 1);
       const meta = axisMeta[ax];
       const axis = meta.type === "numeric"
         ? d3.axisLeft(meta.scale).ticks(5).tickSize(-5)
@@ -263,12 +265,12 @@ function ParCoords({ data, axes, directions, objectives, preferredObjectiveEdge,
         });
       const aG = ag.call(axis);
       aG.selectAll("text").attr("fill", C.textDim).attr("font-size", "8px").attr("font-family", FM);
-      aG.selectAll("line").attr("stroke", C.border);
+      aG.selectAll("line").attr("stroke", axisColor).attr("stroke-opacity", 0.45);
       aG.select(".domain").remove();
       const arrow = directions[ax] === "max" ? "▲" : directions[ax] === "min" ? "▼" : "•";
       const label = ax.length > 16 ? ax.slice(0, 14) + "…" : ax;
       ag.append("text").attr("y", -18).attr("text-anchor", "middle")
-        .attr("fill", C.textMuted).attr("font-size", "10px").attr("font-family", FM)
+        .attr("fill", axisColor).attr("font-size", "10px").attr("font-family", FM)
         .text(`${arrow} ${label}`);
 
       if (meta.type === "numeric") {
@@ -436,6 +438,13 @@ const CATEGORY_LABELS = {
   constraint: "Constraints",
   metric: "Metrics",
 };
+const CATEGORY_COLORS = {
+  solution: "#a78bfa",
+  decision: "#5b8def",
+  objective: "#00e8a2",
+  constraint: "#f43f5e",
+  metric: "#8899b8",
+};
 
 export default function ParetoApp() {
   const [headers, setHeaders] = useState([]);
@@ -560,6 +569,11 @@ export default function ParetoApp() {
 
     return String(value ?? "").toLowerCase().includes(ft.toLowerCase());
   }, []);
+
+  const categoryColorForColumn = useCallback((col) => {
+    const category = columnCategories[col] || "metric";
+    return CATEGORY_COLORS[category] || C.textMuted;
+  }, [columnCategories]);
 
   useEffect(() => {
     if (!objectives.length || !rows.length) return;
@@ -946,7 +960,7 @@ export default function ParetoApp() {
             <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>LABEL COLUMN</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
               {labelCols.map(col => (
-                <Chip key={col} label={col} active={decisionCol === col} onClick={() => setDecisionCol(col === decisionCol ? null : col)} color={C.highlight} />
+                <Chip key={col} label={col} active={decisionCol === col} onClick={() => setDecisionCol(col === decisionCol ? null : col)} color={CATEGORY_COLORS.solution} />
               ))}
             </div>
           </div>
@@ -955,7 +969,7 @@ export default function ParetoApp() {
             <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>DECISIONS</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
               {decisionCols.map(col => (
-                <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={C.front1} />
+                <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={CATEGORY_COLORS.decision} />
               ))}
               {decisionCols.length === 0 && <span style={{ fontSize: 9, color: C.textDim }}>No decision variables assigned.</span>}
             </div>
@@ -987,7 +1001,7 @@ export default function ParetoApp() {
             <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
               {objectives.map(col => (
                 <div key={col} style={{ display: "flex", alignItems: "center", gap: 3 }}>
-                  <Chip label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} />
+                  <Chip label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={CATEGORY_COLORS.objective} />
                   <button onClick={() => toggleDir(col)} style={{
                     padding: "2px 5px", borderRadius: 4, fontSize: 9, fontFamily: FM,
                     border: `1px solid ${C.border}`, background: "transparent",
@@ -1060,7 +1074,7 @@ export default function ParetoApp() {
               <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>CONSTRAINTS</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                 {constraintCols.map(col => (
-                  <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={C.dominated} />
+                  <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={CATEGORY_COLORS.constraint} />
                 ))}
               </div>
             </div>
@@ -1071,7 +1085,7 @@ export default function ParetoApp() {
               <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>METRICS</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                 {metricCols.map(col => (
-                  <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={C.textMuted} />
+                  <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={CATEGORY_COLORS.metric} />
                 ))}
               </div>
             </div>
@@ -1082,7 +1096,7 @@ export default function ParetoApp() {
               <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>{String(entry.category).toUpperCase()}</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                 {entry.columns.map(col => (
-                  <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={C.highlight} />
+                  <Chip key={col} label={col.length > 14 ? col.slice(0, 12) + "…" : col} active={true} onClick={() => {}} color={CATEGORY_COLORS[entry.category] || C.highlight} />
                 ))}
               </div>
             </div>
@@ -1156,7 +1170,7 @@ export default function ParetoApp() {
                       <tr key={h} style={{ borderBottom: `1px solid ${C.border}22` }}>
                         <td style={{ padding: "5px 10px", color: C.text }}>{h}</td>
                         <td style={{ padding: "5px 10px", textAlign: "center", color: isNum ? C.front1 : C.textDim }}>{isNum ? "numeric" : "text"}</td>
-                        <td style={{ padding: "5px 10px", textAlign: "center", color: isObj ? C.accent : C.textDim }}>{CATEGORY_LABELS[category] || category}</td>
+                        <td style={{ padding: "5px 10px", textAlign: "center", color: CATEGORY_COLORS[category] || C.textDim }}>{CATEGORY_LABELS[category] || category}</td>
                         <td style={{ padding: "5px 10px", textAlign: "center" }}>
                           {isObj && (
                             <button onClick={() => toggleDir(h)} style={{
@@ -1193,6 +1207,14 @@ export default function ParetoApp() {
                 <div style={{ fontSize: 9, fontFamily: FM, color: C.highlight, marginBottom: 8 }}>
                   Orientation: preferred objective direction is toward the {preferredObjectiveEdge === "top" ? "top" : "bottom"} edge.
                 </div>
+                <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8, fontSize: 9, fontFamily: FM }}>
+                  {["solution", "decision", "objective", "constraint", "metric"].map(cat => (
+                    <span key={cat} style={{ display: "flex", alignItems: "center", gap: 4, color: CATEGORY_COLORS[cat] || C.textMuted }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 999, background: CATEGORY_COLORS[cat] || C.textMuted, display: "inline-block" }} />
+                      {CATEGORY_LABELS[cat] || cat}
+                    </span>
+                  ))}
+                </div>
                 {displayCols.length > 0 ? (
                   <ParCoords
                     data={visibleData}
@@ -1200,6 +1222,7 @@ export default function ParetoApp() {
                     directions={directions}
                     objectives={objectives}
                     preferredObjectiveEdge={preferredObjectiveEdge}
+                    columnCategories={columnCategories}
                     highlightId={highlightId}
                     onHover={setHighlightId}
                   />
@@ -1240,7 +1263,7 @@ export default function ParetoApp() {
                           position: "sticky", top: 0, zIndex: 2, padding: "6px 6px",
                           textAlign: typeof rows[0]?.[col] === "number" ? "right" : "left",
                           background: C.surface, borderBottom: `2px solid ${C.border}`,
-                          color: objectives.includes(col) ? C.accent : C.textMuted,
+                          color: categoryColorForColumn(col),
                           cursor: "pointer", fontSize: 9, whiteSpace: "nowrap", userSelect: "none", position: "sticky",
                         }}>
                           {col} {sortCol === col ? (sortAsc ? "▲" : "▼") : ""}

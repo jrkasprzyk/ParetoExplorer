@@ -406,22 +406,22 @@ function cellBg(val, min, max, dir) {
   return `rgba(${r},${g},${b},0.15)`;
 }
 
-const DEMO = `Decision,Cost,Performance,Reliability,Weight,Power
-Alpha-1,45000,82,0.94,120,340
-Beta-2,62000,95,0.97,145,520
-Gamma-3,38000,71,0.89,98,280
-Delta-4,55000,88,0.96,130,460
-Epsilon-5,72000,97,0.99,160,580
-Zeta-6,41000,75,0.91,105,300
-Eta-7,48000,85,0.93,125,380
-Theta-8,67000,93,0.98,150,540
-Iota-9,35000,68,0.87,92,260
-Kappa-10,58000,90,0.95,135,480
-Lambda-11,43000,78,0.92,115,320
-Mu-12,69000,96,0.98,155,560
-Nu-13,37000,70,0.88,95,270
-Xi-14,51000,86,0.94,128,420
-Omicron-15,61000,92,0.97,142,500`;
+const DEMO = `Name,Decision Group,Decision Mode,Cost,Performance,Reliability,Weight,Power
+Alpha-1,Group-A,Conservative,45000,82,0.94,120,340
+Beta-2,Group-B,Aggressive,62000,95,0.97,145,520
+Gamma-3,Group-A,Conservative,38000,71,0.89,98,280
+Delta-4,Group-C,Balanced,55000,88,0.96,130,460
+Epsilon-5,Group-B,Aggressive,72000,97,0.99,160,580
+Zeta-6,Group-A,Balanced,41000,75,0.91,105,300
+Eta-7,Group-A,Balanced,48000,85,0.93,125,380
+Theta-8,Group-C,Aggressive,67000,93,0.98,150,540
+Iota-9,Group-A,Conservative,35000,68,0.87,92,260
+Kappa-10,Group-C,Balanced,58000,90,0.95,135,480
+Lambda-11,Group-B,Conservative,43000,78,0.92,115,320
+Mu-12,Group-C,Aggressive,69000,96,0.98,155,560
+Nu-13,Group-A,Conservative,37000,70,0.88,95,270
+Xi-14,Group-B,Balanced,51000,86,0.94,128,420
+Omicron-15,Group-C,Aggressive,61000,92,0.97,142,500`;
 
 const DEFAULT_CATEGORY_ORDER = ["solution", "decision", "objective", "constraint", "metric"];
 const CATEGORY_LABELS = {
@@ -457,6 +457,8 @@ export default function ParetoApp() {
   const [sourceLabel, setSourceLabel] = useState("Uploaded CSV");
   const [importDraft, setImportDraft] = useState(null);
   const [newCategoryName, setNewCategoryName] = useState("");
+  const [showEpsilonControls, setShowEpsilonControls] = useState(false);
+  const [showPreferenceControls, setShowPreferenceControls] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const fileRef = useRef(null);
 
@@ -504,6 +506,13 @@ export default function ParetoApp() {
     if (numCount === vals.length) return "numeric";
     if (numCount === 0) return "text";
     return "mixed";
+  }, []);
+
+  const suggestObjectiveSense = useCallback((header) => {
+    const h = String(header || "").toLowerCase();
+    if (/(performance|reliability|benefit|profit|yield|accuracy|score|success)/.test(h)) return "max";
+    if (/(cost|weight|power|time|risk|penalty|loss|error|emission|violation)/.test(h)) return "min";
+    return "min";
   }, []);
 
   const colStats = useMemo(() => {
@@ -614,9 +623,11 @@ export default function ParetoApp() {
     const { headers: h, rows: r, columnRoles } = parseCSV(csvText);
     const inferredCategories = {};
     const inferredTypes = {};
+    const inferredObjectiveSense = {};
     h.forEach(col => {
       inferredCategories[col] = suggestCategory(col, (columnRoles || {})[col] || null);
       inferredTypes[col] = inferColumnType(col, r);
+      inferredObjectiveSense[col] = suggestObjectiveSense(col);
     });
     setImportDraft({
       headers: h,
@@ -625,16 +636,18 @@ export default function ParetoApp() {
       sourceName,
       assignments: inferredCategories,
       columnTypes: inferredTypes,
+      objectiveSense: inferredObjectiveSense,
       categories: [...DEFAULT_CATEGORY_ORDER],
     });
     setLoaded(false);
-  }, [suggestCategory, inferColumnType]);
+  }, [suggestCategory, inferColumnType, suggestObjectiveSense]);
 
   const applyImportSetup = useCallback(() => {
     if (!importDraft) return;
     const h = importDraft.headers;
     const r = importDraft.rows;
     const assignments = importDraft.assignments || {};
+    const objectiveSense = importDraft.objectiveSense || {};
     const categories = importDraft.categories?.length ? importDraft.categories : [...DEFAULT_CATEGORY_ORDER];
 
     setHeaders(h); setRows(r);
@@ -652,7 +665,11 @@ export default function ParetoApp() {
     setDecisionCol(resolvedDecision);
     setDecisionCols(resolvedDecisionCols);
     setObjectives(resolvedObjectives);
-    const dirs = {}; nc.forEach(c => dirs[c] = "min");
+    const dirs = {};
+    nc.forEach(c => {
+      if (resolvedObjectives.includes(c)) dirs[c] = objectiveSense[c] === "max" ? "max" : "min";
+      else dirs[c] = "min";
+    });
     setDirections(dirs);
     const w = {}; nc.forEach(c => w[c] = 1);
     setWeights(w);
@@ -669,8 +686,30 @@ export default function ParetoApp() {
   }, [startImportSetup]);
 
   const loadDemo = useCallback(() => {
-    startImportSetup(DEMO, "Demo Data");
-  }, [startImportSetup]);
+    const { headers: h, rows: r, columnRoles } = parseCSV(DEMO);
+    const demoAssignments = {};
+    const demoObjectives = new Set(["Cost", "Performance", "Reliability"]);
+    const demoDecisions = new Set(["Decision Group", "Decision Mode"]);
+
+    h.forEach(col => {
+      if (col === "Name") demoAssignments[col] = "solution";
+      else if (demoDecisions.has(col)) demoAssignments[col] = "decision";
+      else if (demoObjectives.has(col)) demoAssignments[col] = "objective";
+      else demoAssignments[col] = "metric";
+    });
+
+    setImportDraft({
+      headers: h,
+      rows: r,
+      columnRoles: columnRoles || {},
+      sourceName: "Demo Data",
+      assignments: demoAssignments,
+      columnTypes: Object.fromEntries(h.map(col => [col, inferColumnType(col, r)])),
+      objectiveSense: Object.fromEntries(h.map(col => [col, demoObjectives.has(col) ? suggestObjectiveSense(col) : "min"])),
+      categories: [...DEFAULT_CATEGORY_ORDER],
+    });
+    setLoaded(false);
+  }, [inferColumnType, suggestObjectiveSense]);
 
   const toggleDir = useCallback(col => setDirections(p => ({ ...p, [col]: p[col] === "min" ? "max" : "min" })), []);
   const handleSort = useCallback(col => {
@@ -748,6 +787,7 @@ export default function ParetoApp() {
                 <tr style={{ borderBottom: `1px solid ${C.border}` }}>
                   <th style={{ textAlign: "left", padding: "8px 10px", color: C.textMuted }}>Column</th>
                   <th style={{ textAlign: "center", padding: "8px 10px", color: C.textMuted }}>Category</th>
+                    <th style={{ textAlign: "center", padding: "8px 10px", color: C.textMuted }}>Objective Sense</th>
                   <th style={{ textAlign: "center", padding: "8px 10px", color: C.textMuted }}>Detected Type</th>
                 </tr>
               </thead>
@@ -763,6 +803,10 @@ export default function ParetoApp() {
                           setImportDraft(prev => ({
                             ...prev,
                             assignments: { ...prev.assignments, [col]: next },
+                            objectiveSense: {
+                              ...(prev.objectiveSense || {}),
+                              [col]: next === "objective" ? (prev.objectiveSense?.[col] || "min") : (prev.objectiveSense?.[col] || "min"),
+                            },
                           }));
                         }}
                         style={{ padding: "2px 6px", borderRadius: 4, border: `1px solid ${C.border}`, background: C.surfaceAlt, color: C.text, fontFamily: FM, fontSize: 11 }}
@@ -770,6 +814,23 @@ export default function ParetoApp() {
                         {importDraft.categories.map(cat => (
                           <option key={cat} value={cat}>{CATEGORY_LABELS[cat] || cat}</option>
                         ))}
+                      </select>
+                    </td>
+                    <td style={{ padding: "6px 10px", textAlign: "center" }}>
+                      <select
+                        value={importDraft.objectiveSense?.[col] || "min"}
+                        disabled={(importDraft.assignments[col] || "metric") !== "objective"}
+                        onChange={e => {
+                          const next = e.target.value;
+                          setImportDraft(prev => ({
+                            ...prev,
+                            objectiveSense: { ...(prev.objectiveSense || {}), [col]: next },
+                          }));
+                        }}
+                        style={{ padding: "2px 6px", borderRadius: 4, border: `1px solid ${C.border}`, background: C.surfaceAlt, color: C.text, fontFamily: FM, fontSize: 11, opacity: (importDraft.assignments[col] || "metric") === "objective" ? 1 : 0.6 }}
+                      >
+                        <option value="min">minimize</option>
+                        <option value="max">maximize</option>
                       </select>
                     </td>
                     <td style={{ padding: "6px 10px", textAlign: "center", color: C.textMuted }}>{importDraft.columnTypes[col]}</td>
@@ -912,35 +973,59 @@ export default function ParetoApp() {
           </div>
 
           <div style={{ marginBottom: 18 }}>
-            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>EPSILON (ε) PER OBJECTIVE</div>
-            {objectives.map(o => {
-              const er = epsRanges[o] || { min: 0.001, max: 1, step: 0.001 };
-              return (
-                <div key={o} style={{ marginBottom: 5 }}>
-                  <Slider label={o.length > 8 ? o.slice(0, 6) + "…" : o}
-                    value={epsilons[o] ?? er.min * 100}
-                    onChange={v => setEpsilons(p => ({ ...p, [o]: v }))}
-                    min={er.min} max={er.max} step={er.step} />
-                </div>
-              );
-            })}
-            {objectives.length === 0 && <p style={{ fontSize: 9, color: C.textDim }}>Select objectives first.</p>}
-            <p style={{ fontSize: 9, color: C.textDim, marginTop: 3, lineHeight: 1.3 }}>
-              Each objective gets its own grid resolution. Bigger ε = coarser = fewer Pareto solutions for that dimension.
-            </p>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+              <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, letterSpacing: 1 }}>EPSILON (ε) PER OBJECTIVE</div>
+              <button
+                onClick={() => setShowEpsilonControls(p => !p)}
+                style={{ padding: "2px 7px", borderRadius: 5, border: `1px solid ${showEpsilonControls ? C.accent : C.border}`, background: showEpsilonControls ? C.accentDim : "transparent", color: showEpsilonControls ? C.accent : C.textMuted, fontFamily: FM, fontSize: 9, cursor: "pointer" }}
+              >
+                {showEpsilonControls ? "On" : "Off"}
+              </button>
+            </div>
+            {showEpsilonControls && (
+              <>
+                {objectives.map(o => {
+                  const er = epsRanges[o] || { min: 0.001, max: 1, step: 0.001 };
+                  return (
+                    <div key={o} style={{ marginBottom: 5 }}>
+                      <Slider label={o.length > 8 ? o.slice(0, 6) + "…" : o}
+                        value={epsilons[o] ?? er.min * 100}
+                        onChange={v => setEpsilons(p => ({ ...p, [o]: v }))}
+                        min={er.min} max={er.max} step={er.step} />
+                    </div>
+                  );
+                })}
+                {objectives.length === 0 && <p style={{ fontSize: 9, color: C.textDim }}>Select objectives first.</p>}
+                <p style={{ fontSize: 9, color: C.textDim, marginTop: 3, lineHeight: 1.3 }}>
+                  Each objective gets its own grid resolution. Bigger ε = coarser = fewer Pareto solutions for that dimension.
+                </p>
+              </>
+            )}
           </div>
 
           <div style={{ marginBottom: 18 }}>
-            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>PREFERENCE WEIGHTS</div>
-            {objectives.map(o => (
-              <div key={o} style={{ marginBottom: 5 }}>
-                <Slider label={o.length > 8 ? o.slice(0, 6) + "…" : o} value={weights[o] ?? 1}
-                  onChange={v => setWeights(p => ({ ...p, [o]: v }))} min={0} max={5} step={0.1} />
-              </div>
-            ))}
-            <p style={{ fontSize: 9, color: C.textDim, marginTop: 3, lineHeight: 1.3 }}>
-              Direction-aware normalized aggregate. Higher weight = more important.
-            </p>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+              <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, letterSpacing: 1 }}>PREFERENCE WEIGHTS</div>
+              <button
+                onClick={() => setShowPreferenceControls(p => !p)}
+                style={{ padding: "2px 7px", borderRadius: 5, border: `1px solid ${showPreferenceControls ? C.accent : C.border}`, background: showPreferenceControls ? C.accentDim : "transparent", color: showPreferenceControls ? C.accent : C.textMuted, fontFamily: FM, fontSize: 9, cursor: "pointer" }}
+              >
+                {showPreferenceControls ? "On" : "Off"}
+              </button>
+            </div>
+            {showPreferenceControls && (
+              <>
+                {objectives.map(o => (
+                  <div key={o} style={{ marginBottom: 5 }}>
+                    <Slider label={o.length > 8 ? o.slice(0, 6) + "…" : o} value={weights[o] ?? 1}
+                      onChange={v => setWeights(p => ({ ...p, [o]: v }))} min={0} max={5} step={0.1} />
+                  </div>
+                ))}
+                <p style={{ fontSize: 9, color: C.textDim, marginTop: 3, lineHeight: 1.3 }}>
+                  Direction-aware normalized aggregate. Higher weight = more important.
+                </p>
+              </>
+            )}
           </div>
 
           {!!constraintCols.length && (
@@ -1021,6 +1106,7 @@ export default function ParetoApp() {
                   sourceName: sourceLabel,
                   assignments: { ...columnCategories },
                   columnTypes: Object.fromEntries(headers.map(h => [h, inferColumnType(h, rows)])),
+                  objectiveSense: Object.fromEntries(headers.map(h => [h, directions[h] === "max" ? "max" : "min"])),
                   categories: [...categoryOrder],
                 })}
                 style={{ marginBottom: 12, padding: "5px 10px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surfaceAlt, color: C.accent, fontFamily: FM, fontSize: 11, cursor: "pointer" }}

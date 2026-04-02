@@ -1,0 +1,37 @@
+Handoff for next session
+
+Project
+- Pareto Explorer
+- Main app file: ParetoApp.jsx
+
+Current status
+- Vercel dependency conflict fixed by aligning Vite plugin versions.
+- PostCSS warning fixed by moving @import to the top of the style block in index.html.
+- Added objective-orientation feature for parallel coordinates:
+1. Preferred @ Top
+2. Preferred @ Bottom
+- Parallel axes now auto-flip for objective min/max based on preferred edge.
+- Added orientation legend note in the Parallel view.
+- Added persistent category color system across app (solution, decision, objective, constraint, metric), including:
+1. Sidebar chips
+2. Parallel axis labels/axis lines
+3. Table headers
+4. Config category labels
+5. Parallel category legend
+- Objective-related visual hierarchy improved:
+1. Orientation note now uses objective color
+2. New larger left-sidebar section header: OBJECTIVE CONTROLS
+
+Validation completed
+- Production build succeeds: npm run build
+- Last known build output is clean (no dependency/install conflict, no @import warning)
+
+Notes for follow-up
+- Terminal record shows npm run dev exited with code 1 earlier; production build is passing, so dev-server startup should be re-checked next session if needed.
+- If visual tuning is requested, likely next tweak is contrast balancing for category-tinted axis tick lines on bright displays.
+
+Suggested quick smoke test next time
+1. Load demo data.
+2. Go to Parallel tab.
+3. Toggle Preferred @ Top / Preferred @ Bottom and verify objective axes flip correctly.
+4. Confirm category colors are consistent between sidebar, axis labels, and table headers.

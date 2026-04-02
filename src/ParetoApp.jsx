@@ -224,61 +224,83 @@ function ParCoords({ data, axes, directions, highlightId, onHover }) {
     const g = svg.append("g").attr("transform", `translate(${mg.left},${mg.top})`);
 
     const x = d3.scalePoint().domain(axes).range([0, w]).padding(0.08);
-    const yS = {};
+    const axisMeta = {};
     axes.forEach(ax => {
-      const vals = data.map(d => typeof d[ax] === "number" ? d[ax] : null).filter(v => v !== null);
-      const ext = d3.extent(vals);
-      const pad = ((ext[1] || 0) - (ext[0] || 0)) * 0.1 || 1;
-      yS[ax] = d3.scaleLinear().domain([ext[0] - pad, ext[1] + pad]).range([h, 0]);
+      const vals = data.map(d => d[ax]).filter(v => v !== null && v !== undefined && v !== "");
+      const numericVals = vals.filter(v => typeof v === "number" && Number.isFinite(v));
+      const numericShare = vals.length ? numericVals.length / vals.length : 0;
+      if (numericVals.length && numericShare >= 0.7) {
+        const ext = d3.extent(numericVals);
+        const pad = ((ext[1] || 0) - (ext[0] || 0)) * 0.1 || 1;
+        axisMeta[ax] = {
+          type: "numeric",
+          scale: d3.scaleLinear().domain([ext[0] - pad, ext[1] + pad]).range([h, 0]),
+        };
+      } else {
+        const categories = Array.from(new Set(vals.map(v => String(v))));
+        axisMeta[ax] = {
+          type: "categorical",
+          scale: d3.scalePoint().domain(categories).range([h, 0]).padding(0.5),
+        };
+      }
     });
 
     axes.forEach(ax => {
       const xP = x(ax);
       const ag = g.append("g").attr("transform", `translate(${xP},0)`);
       ag.append("line").attr("y1", 0).attr("y2", h).attr("stroke", C.border).attr("stroke-width", 1);
-      const aG = ag.call(d3.axisLeft(yS[ax]).ticks(5).tickSize(-5));
+      const meta = axisMeta[ax];
+      const axis = meta.type === "numeric"
+        ? d3.axisLeft(meta.scale).ticks(5).tickSize(-5)
+        : d3.axisLeft(meta.scale).tickSize(-5).tickFormat(v => {
+          const s = String(v);
+          return s.length > 11 ? s.slice(0, 9) + "…" : s;
+        });
+      const aG = ag.call(axis);
       aG.selectAll("text").attr("fill", C.textDim).attr("font-size", "8px").attr("font-family", FM);
       aG.selectAll("line").attr("stroke", C.border);
       aG.select(".domain").remove();
-      const arrow = directions[ax] === "max" ? "▲" : "▼";
+      const arrow = directions[ax] === "max" ? "▲" : directions[ax] === "min" ? "▼" : "•";
       const label = ax.length > 16 ? ax.slice(0, 14) + "…" : ax;
       ag.append("text").attr("y", -18).attr("text-anchor", "middle")
         .attr("fill", C.textMuted).attr("font-size", "10px").attr("font-family", FM)
         .text(`${arrow} ${label}`);
 
-      const brush = d3.brushY().extent([[-12, 0], [12, h]])
-        .on("brush end", (event) => {
-          if (!event.selection) {
-            delete brushesRef.current[ax];
-          } else {
-            const [y0, y1] = event.selection;
-            brushesRef.current[ax] = [yS[ax].invert(y1), yS[ax].invert(y0)];
-          }
-          // Update line visibility
-          svg.selectAll(".pc-line")
-            .attr("stroke-opacity", d => {
-              const brushKeys = Object.keys(brushesRef.current);
-              if (!brushKeys.length) return d._front === 0 ? 0.85 : Math.max(0.06, 0.4 - (d._front ?? 5) * 0.08);
-              const inBrush = brushKeys.every(k => {
-                const [lo, hi] = brushesRef.current[k];
-                const v = d[k];
-                return typeof v === "number" && v >= lo && v <= hi;
+      if (meta.type === "numeric") {
+        const brush = d3.brushY().extent([[-12, 0], [12, h]])
+          .on("brush end", (event) => {
+            if (!event.selection) {
+              delete brushesRef.current[ax];
+            } else {
+              const [y0, y1] = event.selection;
+              brushesRef.current[ax] = [meta.scale.invert(y1), meta.scale.invert(y0)];
+            }
+            // Update line visibility
+            svg.selectAll(".pc-line")
+              .attr("stroke-opacity", d => {
+                const brushKeys = Object.keys(brushesRef.current);
+                if (!brushKeys.length) return d._front === 0 ? 0.85 : Math.max(0.06, 0.4 - (d._front ?? 5) * 0.08);
+                const inBrush = brushKeys.every(k => {
+                  const [lo, hi] = brushesRef.current[k];
+                  const v = d[k];
+                  return typeof v === "number" && v >= lo && v <= hi;
+                });
+                return inBrush ? 0.9 : 0.03;
+              })
+              .attr("stroke-width", d => {
+                const brushKeys = Object.keys(brushesRef.current);
+                if (!brushKeys.length) return d._front === 0 ? 2.2 : 1;
+                const inBrush = brushKeys.every(k => {
+                  const [lo, hi] = brushesRef.current[k];
+                  const v = d[k];
+                  return typeof v === "number" && v >= lo && v <= hi;
+                });
+                return inBrush ? 2.5 : 0.5;
               });
-              return inBrush ? 0.9 : 0.03;
-            })
-            .attr("stroke-width", d => {
-              const brushKeys = Object.keys(brushesRef.current);
-              if (!brushKeys.length) return d._front === 0 ? 2.2 : 1;
-              const inBrush = brushKeys.every(k => {
-                const [lo, hi] = brushesRef.current[k];
-                const v = d[k];
-                return typeof v === "number" && v >= lo && v <= hi;
-              });
-              return inBrush ? 2.5 : 0.5;
-            });
-        });
-      ag.append("g").attr("class", "brush").call(brush)
-        .selectAll("rect").attr("fill", C.highlightDim).attr("rx", 3);
+          });
+        ag.append("g").attr("class", "brush").call(brush)
+          .selectAll("rect").attr("fill", C.highlightDim).attr("rx", 3);
+      }
     });
 
     const line = d3.line().defined(d => d[1] !== null).x(d => d[0]).y(d => d[1]).curve(d3.curveMonotoneX);
@@ -287,8 +309,16 @@ function ParCoords({ data, axes, directions, highlightId, onHover }) {
       .append("path").attr("class", "pc-line")
       .attr("d", d => {
         const pts = axes.map(ax => {
-          const v = typeof d[ax] === "number" ? d[ax] : null;
-          return [x(ax), v !== null ? yS[ax](v) : null];
+          const meta = axisMeta[ax];
+          if (!meta) return [x(ax), null];
+          if (meta.type === "numeric") {
+            const v = typeof d[ax] === "number" ? d[ax] : null;
+            return [x(ax), v !== null ? meta.scale(v) : null];
+          }
+          const raw = d[ax];
+          if (raw === null || raw === undefined || raw === "") return [x(ax), null];
+          const y = meta.scale(String(raw));
+          return [x(ax), y ?? null];
         });
         return line(pts);
       })
@@ -313,8 +343,16 @@ function ParCoords({ data, axes, directions, highlightId, onHover }) {
       const hd = data.find(d => d._id === highlightId);
       if (hd) {
         const pts = axes.map(ax => {
-          const v = typeof hd[ax] === "number" ? hd[ax] : null;
-          return [x(ax), v !== null ? yS[ax](v) : null];
+          const meta = axisMeta[ax];
+          if (!meta) return [x(ax), null];
+          if (meta.type === "numeric") {
+            const v = typeof hd[ax] === "number" ? hd[ax] : null;
+            return [x(ax), v !== null ? meta.scale(v) : null];
+          }
+          const raw = hd[ax];
+          if (raw === null || raw === undefined || raw === "") return [x(ax), null];
+          const y = meta.scale(String(raw));
+          return [x(ax), y ?? null];
         });
         g.append("path").attr("d", line(pts)).attr("fill", "none")
           .attr("stroke", C.highlight).attr("stroke-width", 3.5).attr("stroke-opacity", 1)
@@ -402,6 +440,8 @@ export default function ParetoApp() {
   const [tab, setTab] = useState("table");
   const [showOnlyPareto, setShowOnlyPareto] = useState(false);
   const [decisionCol, setDecisionCol] = useState(null);
+  const [parallelAxes, setParallelAxes] = useState([]);
+  const [visibleFronts, setVisibleFronts] = useState({});
   const [loaded, setLoaded] = useState(false);
   const fileRef = useRef(null);
 
@@ -464,6 +504,34 @@ export default function ParetoApp() {
     return all;
   }, [fronts, filterText, sortCol, sortAsc, showOnlyPareto, weights, objectives, directions, colStats, headers]);
 
+  const availableFronts = useMemo(() => {
+    return Array.from(new Set(sortedData.map(r => r._front).filter(f => f !== undefined))).sort((a, b) => a - b);
+  }, [sortedData]);
+
+  useEffect(() => {
+    setVisibleFronts(prev => {
+      const next = {};
+      availableFronts.forEach(f => {
+        next[f] = prev[f] !== undefined ? prev[f] : true;
+      });
+      return next;
+    });
+  }, [availableFronts]);
+
+  useEffect(() => {
+    setParallelAxes(prev => {
+      const filtered = prev.filter(col => headers.includes(col));
+      return filtered.length ? filtered : headers;
+    });
+  }, [headers]);
+
+  const parallelData = useMemo(() => {
+    return sortedData.filter(row => {
+      if (row._front === undefined) return true;
+      return visibleFronts[row._front] !== false;
+    });
+  }, [sortedData, visibleFronts]);
+
   const loadData = useCallback((csvText) => {
     const { headers: h, rows: r, columnRoles } = parseCSV(csvText);
     setHeaders(h); setRows(r);
@@ -484,6 +552,7 @@ export default function ParetoApp() {
 
     setDecisionCol(resolvedDecision);
     setObjectives(resolvedObjectives.length ? resolvedObjectives : nc);
+    setParallelAxes(h);
     const dirs = {}; nc.forEach(c => dirs[c] = "min");
     setDirections(dirs);
     const w = {}; nc.forEach(c => w[c] = 1);
@@ -504,6 +573,7 @@ export default function ParetoApp() {
     setHeaders(d.headers); setRows(d.rows);
     setColumnRoleHints(d.columnRoles || {});
     setDecisionCol("Decision");
+    setParallelAxes(d.headers);
     const nc = d.headers.filter(col => d.rows.some(row => typeof row[col] === "number"));
     setObjectives(nc);
     const dirs = {}; nc.forEach(c => dirs[c] = c === "Cost" || c === "Weight" ? "min" : "max");
@@ -514,6 +584,7 @@ export default function ParetoApp() {
   }, []);
 
   const toggleObj = useCallback(col => setObjectives(p => p.includes(col) ? p.filter(c => c !== col) : [...p, col]), []);
+  const toggleParallelAxis = useCallback(col => setParallelAxes(p => p.includes(col) ? p.filter(c => c !== col) : [...p, col]), []);
   const toggleDir = useCallback(col => setDirections(p => ({ ...p, [col]: p[col] === "min" ? "max" : "min" })), []);
   const handleSort = useCallback(col => {
     if (sortCol === col) setSortAsc(p => !p);
@@ -642,6 +713,52 @@ export default function ParetoApp() {
             </div>
           </div>
 
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>PARALLEL AXES</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, maxHeight: 140, overflowY: "auto" }}>
+              {headers.map(col => (
+                <Chip
+                  key={col}
+                  label={col.length > 14 ? col.slice(0, 12) + "…" : col}
+                  active={parallelAxes.includes(col)}
+                  onClick={() => toggleParallelAxis(col)}
+                  color={C.front1}
+                />
+              ))}
+            </div>
+            <p style={{ fontSize: 9, color: C.textDim, marginTop: 3, lineHeight: 1.3 }}>
+              Choose any columns to draw in parallel coordinates.
+            </p>
+          </div>
+
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>VISIBLE FRONTS</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+              {availableFronts.map(f => (
+                <Chip
+                  key={f}
+                  label={`F${f}`}
+                  active={visibleFronts[f] !== false}
+                  onClick={() => setVisibleFronts(p => ({ ...p, [f]: p[f] === false }))}
+                  color={frontColor(f)}
+                />
+              ))}
+              {availableFronts.length > 0 && (
+                <Chip
+                  label="All"
+                  active={availableFronts.every(f => visibleFronts[f] !== false)}
+                  onClick={() => {
+                    const allOn = availableFronts.every(f => visibleFronts[f] !== false);
+                    const next = {};
+                    availableFronts.forEach(f => { next[f] = !allOn; });
+                    setVisibleFronts(next);
+                  }}
+                  color={C.accent}
+                />
+              )}
+            </div>
+          </div>
+
           <div>
             <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>PREFERENCE WEIGHTS</div>
             {objectives.map(o => (
@@ -714,20 +831,20 @@ export default function ParetoApp() {
                 <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6 }}>
                   Drag on axes to brush/filter · Hover lines to inspect · Pareto-style linked interaction
                 </div>
-                {objectives.length > 0 ? (
-                  <ParCoords data={sortedData} axes={objectives} directions={directions} highlightId={highlightId} onHover={setHighlightId} />
+                {parallelAxes.length > 0 ? (
+                  <ParCoords data={parallelData} axes={parallelAxes} directions={directions} highlightId={highlightId} onHover={setHighlightId} />
                 ) : (
-                  <div style={{ padding: 60, textAlign: "center", color: C.textDim, fontSize: 13 }}>Select at least one objective.</div>
+                  <div style={{ padding: 60, textAlign: "center", color: C.textDim, fontSize: 13 }}>Select at least one column in Parallel Axes.</div>
                 )}
               </div>
               <div style={{ display: "flex", gap: 14, padding: "6px 10px", fontSize: 10, fontFamily: FM, color: C.textMuted, flexWrap: "wrap" }}>
-                {fronts.slice(0, 5).map((_, i) => (
+                {availableFronts.slice(0, 8).map((i) => (
                   <span key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>
                     <span style={{ width: 12, height: 3, background: frontColor(i), borderRadius: 2, display: "inline-block" }} />
-                    Front {i}{i === 0 ? " (Pareto)" : ""}
+                    Front {i}{i === 0 ? " (Pareto)" : ""}{visibleFronts[i] === false ? " (hidden)" : ""}
                   </span>
                 ))}
-                {fronts.length > 5 && <span>+{fronts.length - 5} more</span>}
+                {availableFronts.length > 8 && <span>+{availableFronts.length - 8} more</span>}
               </div>
             </div>
           )}

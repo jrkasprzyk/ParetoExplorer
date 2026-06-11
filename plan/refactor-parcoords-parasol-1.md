@@ -4,13 +4,21 @@ version: 1.0
 date_created: 2026-06-11
 last_updated: 2026-06-11
 owner: Joseph Kasprzyk (jrkasprzyk)
-status: 'Planned'
+status: 'In progress'
 tags: [refactor, feature, architecture, migration, ui]
 ---
 
 # Introduction
 
-![Status: Planned](https://img.shields.io/badge/status-Planned-blue)
+![Status: In progress](https://img.shields.io/badge/status-In%20progress-yellow)
+
+> **Implementation notes (2026-06-11, phases 1–4 complete).** Three upstream bugs surfaced during integration and are fixed locally with `patch-package` (see `patches/`, applied by the `postinstall` script). All three should be upstreamed before TASK-030:
+>
+> 1. **`@jrkasprzyk/parcoord-es` — d3 v7 brush listener args.** `convertBrushArguments` in `brush/1d/brushFor.js` still assumes the pre-v6 `(datum, index, nodes)` listener signature (`arguments[2][0]`); d3 v7 passes `(event, datum)`, so any programmatic `brush.move`/`brushReset` (triggered by `hideAxes`, `cluster`, clear-brush) crashed. Patch rebuilds the metadata from the event and the enclosing closure's axis. The `'start'` handler's `sourceEvent !== null` check also needed to be `!= null` (programmatic events have `undefined`).
+> 2. **`parasol-es` — brush sync recursion.** `util/sync.js`'s empty-brush edge case calls `pc.brushReset()`, which re-fires the `'brush'` event sync is subscribed to → stack overflow on an axis click-away. Patch adds a reentrancy guard.
+> 3. **`@jrkasprzyk/parcoord-es` — bundling centroid crash.** `computeCentroids` indexes `config.clusterCentroids` by exact yscale positions; `flipAxes` reverses domains without recomputing centroids (and `flipAxisAndUpdatePCP` renders mid-flip), so bundling + flipped axes crashed on a missing Map key. Patch skips the bundling pull for missing keys; `ParasolPlot` additionally recomputes centroids after flips.
+>
+> **Deviations from plan:** TASK-018 chart→table hover is not implemented (RISK-001 confirmed: parcoords dispatches `highlight` only on programmatic calls, no per-line mouseover event) — table→chart highlight works via `ps.highlight()`; chart→table is an upstream feature request. TASK-016 hidden axes are passed as reordered keys + `hideAxes()` at instantiation. The `autoscale()` `config.flipAxes` branch upstream produces garbage domains (`tempDate.unshift` return values), so `ParasolPlot` re-instantiates on structural changes and always applies `flipAxes()` last — worth an upstream fix too. The parallel tab stays mounted (`display` toggle) so brushes survive tab switches.
 
 Pareto Explorer currently renders its parallel coordinates view with a hand-rolled D3 v7 SVG component (`ParCoords` in `src/ParetoApp.jsx:200-376`). The original implementation avoided parasol-es because it was unmaintained; the `modernization` branch of `ParasolJS/parasol-es` (v2.0.0, D3 v7, Rollup 4, `@jrkasprzyk/parcoord-es` backend) is now nearly ready for npm publication. This plan replaces the custom `ParCoords` component with a parasol-es-backed React wrapper, converts the app from its dark theme to a light theme (matching parasol's default light styling), ports parasol's bundling and k-means clustering features into the UI, and optionally migrates the repository into the ParasolJS GitHub organization.
 
@@ -43,12 +51,12 @@ Pareto Explorer currently renders its parallel coordinates view with a hand-roll
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-001 | Create `src/theme.js` exporting `C`, `FM`, `FB`, `CATEGORY_COLORS`, `CATEGORY_LABELS`, `DEFAULT_CATEGORY_ORDER`, `frontColor()`, `cellBg()` (moved verbatim from `src/ParetoApp.jsx:5-16, 196-198, 406-414, 433-447`). | | |
-| TASK-002 | Create `src/lib/csv.js` exporting `parseCSV` (moved verbatim from `src/ParetoApp.jsx:18-138`) and the `DEMO` CSV string (`src/ParetoApp.jsx:416-431`). | | |
-| TASK-003 | Create `src/lib/pareto.js` exporting `epsilonDominates`, `epsilonSort`, `wScore` (moved verbatim from `src/ParetoApp.jsx:140-194`). | | |
-| TASK-004 | Create `src/components/ParCoords.jsx` containing the existing custom D3 component (`src/ParetoApp.jsx:200-376`) unchanged; update imports in `src/ParetoApp.jsx`. This file is deleted in Phase 3. | | |
-| TASK-005 | Create `src/components/controls.jsx` exporting `Chip` and `Slider` (`src/ParetoApp.jsx:378-404`). | | |
-| TASK-006 | Validate: `npm run build` succeeds; app renders identically (demo data smoke test: load demo, check table, parallel, config tabs). | | |
+| TASK-001 | Create `src/theme.js` exporting `C`, `FM`, `FB`, `CATEGORY_COLORS`, `CATEGORY_LABELS`, `DEFAULT_CATEGORY_ORDER`, `frontColor()`, `cellBg()` (moved verbatim from `src/ParetoApp.jsx:5-16, 196-198, 406-414, 433-447`). | ✅ | 2026-06-11 |
+| TASK-002 | Create `src/lib/csv.js` exporting `parseCSV` (moved verbatim from `src/ParetoApp.jsx:18-138`) and the `DEMO` CSV string (`src/ParetoApp.jsx:416-431`). | ✅ | 2026-06-11 |
+| TASK-003 | Create `src/lib/pareto.js` exporting `epsilonDominates`, `epsilonSort`, `wScore` (moved verbatim from `src/ParetoApp.jsx:140-194`). | ✅ | 2026-06-11 |
+| TASK-004 | Create `src/components/ParCoords.jsx` containing the existing custom D3 component (`src/ParetoApp.jsx:200-376`) unchanged; update imports in `src/ParetoApp.jsx`. This file is deleted in Phase 3. | ✅ | 2026-06-11 |
+| TASK-005 | Create `src/components/controls.jsx` exporting `Chip` and `Slider` (`src/ParetoApp.jsx:378-404`). | ✅ | 2026-06-11 |
+| TASK-006 | Validate: `npm run build` succeeds; app renders identically (demo data smoke test: load demo, check table, parallel, config tabs). | ✅ | 2026-06-11 |
 
 ### Implementation Phase 2 — Light theme
 
@@ -56,12 +64,12 @@ Pareto Explorer currently renders its parallel coordinates view with a hand-roll
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-007 | Replace `C` values in `src/theme.js` with light equivalents: `bg: "#f7f8fa"`, `surface: "#ffffff"`, `surfaceAlt: "#eef1f6"`, `border: "#d4dae4"`, `borderLight: "#bcc6d6"`, `text: "#1a2233"`, `textMuted: "#5a6a85"`, `textDim: "#8a96ab"`, `accent: "#00875f"`, `accentDim: "rgba(0,135,95,0.10)"`, `front0: "#00875f"`, `front1: "#2563eb"`, `front2: "#9333ea"`, `front3: "#ea580c"`, `frontN: "#94a3b8"`, `dominated: "#dc2626"`, `dominatedDim: "rgba(220,38,38,0.08)"`, `highlight: "#7c3aed"`, `highlightDim: "rgba(124,58,237,0.10)"`. | | |
-| TASK-008 | Update `CATEGORY_COLORS` in `src/theme.js` for light-background contrast: `solution: "#7c3aed"`, `decision: "#2563eb"`, `objective: "#00875f"`, `constraint: "#dc2626"`, `metric: "#5a6a85"`. | | |
-| TASK-009 | Update `index.html:11` body background from `#0b1121` to `#f7f8fa`. | | |
-| TASK-010 | Update `cellBg()` heatmap interpolation endpoints in `src/theme.js` to light-theme red→green (`#dc2626` → `#00875f` at alpha 0.18) so table conditional formatting remains legible. | | |
-| TASK-011 | Audit all JSX for hard-coded colors outside `theme.js` (search regex `#[0-9a-fA-F]{3,8}|rgba?\(` in `src/`); replace any stragglers with `C.*` tokens. | | |
-| TASK-012 | Validate: visual smoke test of landing page, import setup, table (heatmap on/off, hover highlight), sidebar chips, config tab. Verify text contrast with browser devtools accessibility checker (>= AA per REQ-004). | | |
+| TASK-007 | Replace `C` values in `src/theme.js` with light equivalents: `bg: "#f7f8fa"`, `surface: "#ffffff"`, `surfaceAlt: "#eef1f6"`, `border: "#d4dae4"`, `borderLight: "#bcc6d6"`, `text: "#1a2233"`, `textMuted: "#5a6a85"`, `textDim: "#8a96ab"`, `accent: "#00875f"`, `accentDim: "rgba(0,135,95,0.10)"`, `front0: "#00875f"`, `front1: "#2563eb"`, `front2: "#9333ea"`, `front3: "#ea580c"`, `frontN: "#94a3b8"`, `dominated: "#dc2626"`, `dominatedDim: "rgba(220,38,38,0.08)"`, `highlight: "#7c3aed"`, `highlightDim: "rgba(124,58,237,0.10)"`. | ✅ | 2026-06-11 |
+| TASK-008 | Update `CATEGORY_COLORS` in `src/theme.js` for light-background contrast: `solution: "#7c3aed"`, `decision: "#2563eb"`, `objective: "#00875f"`, `constraint: "#dc2626"`, `metric: "#5a6a85"`. | ✅ | 2026-06-11 |
+| TASK-009 | Update `index.html:11` body background from `#0b1121` to `#f7f8fa`. | ✅ | 2026-06-11 |
+| TASK-010 | Update `cellBg()` heatmap interpolation endpoints in `src/theme.js` to light-theme red→green (`#dc2626` → `#00875f` at alpha 0.18) so table conditional formatting remains legible. | ✅ | 2026-06-11 |
+| TASK-011 | Audit all JSX for hard-coded colors outside `theme.js` (search regex `#[0-9a-fA-F]{3,8}|rgba?\(` in `src/`); replace any stragglers with `C.*` tokens. | ✅ | 2026-06-11 |
+| TASK-012 | Validate: visual smoke test of landing page, import setup, table (heatmap on/off, hover highlight), sidebar chips, config tab. Verify text contrast with browser devtools accessibility checker (>= AA per REQ-004). | ✅ | 2026-06-11 |
 
 ### Implementation Phase 3 — Replace custom ParCoords with parasol-es
 
@@ -69,17 +77,17 @@ Pareto Explorer currently renders its parallel coordinates view with a hand-roll
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-013 | Add dependency: `npm install github:ParasolJS/parasol-es#modernization`. Record exact commit SHA in `package-lock.json`. Add CON-005 `optimizeDeps.include` entries to `vite.config.js` only if dev server errors on import. | | |
-| TASK-014 | Import `parasol-es/dist/parcoords.css` once in `src/main.jsx`. Add app-level CSS overrides (new file `src/parasol-overrides.css`) scoped to `.parcoords` for font (`FM`) and axis text color (`C.textMuted`) so the chart matches the theme. | | |
-| TASK-015 | Create `src/components/ParasolPlot.jsx`: React wrapper component with props `{ data, axes, directions, objectives, preferredObjectiveEdge, columnCategories, highlightId, colorBy, frontPalette, clusterConfig, bundling, onHover, onBrush }`. Instantiate with `Parasol(data, { chartOptions })('#parasol-chart')` inside `useEffect` keyed on `[data, axes]`; destroy by clearing the container on cleanup. Container `div` rendered by React with fixed `id="parasol-chart"` and `className="parcoords"`, height 370, width 100% (ResizeObserver triggers `ps.render()` on width change). | | |
-| TASK-016 | Implement axis configuration in `ParasolPlot`: hide non-display columns via `ps.hideAxes(headers.filter(h => !axes.includes(h)))`; implement preferred-edge orientation by calling `ps.flipAxes(axesToFlip)` where `axesToFlip` reproduces the `invertForPreference` logic from `src/ParetoApp.jsx:235` (objective axes where `(dir === "min" && prefersTop) || (dir === "max" && !prefersTop)`). | | |
-| TASK-017 | Implement line coloring: `ps.color(d => frontColor(d._front))` when `colorBy === "front"`. Update on prop change via a lightweight `useEffect` calling `ps.color(...).render()` without re-instantiating. | | |
-| TASK-018 | Implement hover sync: subscribe to parcoords mouseover via `ps.charts[0].on("highlight", ...)` if available, else attach a `mousemove` handler using parcoords `getCentroids`/mark API; call `onHover(id)`. For inbound `highlightId` (table → chart), call `ps.mark([row])` / `ps.unmark()`. | | |
-| TASK-019 | Implement brush → table linking (REQ-007): register `ps.charts[0].on("brush", () => onBrush(ps.state.brushed.map(d => d._id)))`; in `ParetoApp`, store `brushedIds` state and filter the table view when non-null. Add a "Clear Brush" button calling `ps.brushReset()`. | | |
-| TASK-020 | Replace `<ParCoords .../>` usage in the parallel tab (`src/ParetoApp.jsx:1222-1231`) with `<ParasolPlot .../>`; pass `visibleData` so ε-front visibility toggles keep working (data filtered before parasol sees it). | | |
-| TASK-021 | Reproduce category-colored axis labels: after `ps.render()`, post-process axis label text elements (`.parcoords .dimension .label`) setting `fill` from `CATEGORY_COLORS[columnCategories[axis]]`; re-run after any `render()`. Document this as a candidate upstream feature (`dimensionTitleColor` option). | | |
-| TASK-022 | Delete `src/components/ParCoords.jsx` (custom D3 implementation) once parity checklist in TASK-023 passes. | | |
-| TASK-023 | Validate parity checklist: (a) brush on numeric axis filters lines and table; (b) hover line highlights table row and vice versa; (c) front colors match table badges; (d) string columns render as categorical axes; (e) Preferred @ Top/Bottom flips objective axes; (f) front visibility chips add/remove lines; (g) `npm run build` clean. | | |
+| TASK-013 | Add dependency: `npm install github:ParasolJS/parasol-es#modernization`. Record exact commit SHA in `package-lock.json`. Add CON-005 `optimizeDeps.include` entries to `vite.config.js` only if dev server errors on import. | ✅ | 2026-06-11 |
+| TASK-014 | Import `parasol-es/dist/parcoords.css` once in `src/main.jsx`. Add app-level CSS overrides (new file `src/parasol-overrides.css`) scoped to `.parcoords` for font (`FM`) and axis text color (`C.textMuted`) so the chart matches the theme. | ✅ | 2026-06-11 |
+| TASK-015 | Create `src/components/ParasolPlot.jsx`: React wrapper component with props `{ data, axes, directions, objectives, preferredObjectiveEdge, columnCategories, highlightId, colorBy, frontPalette, clusterConfig, bundling, onHover, onBrush }`. Instantiate with `Parasol(data, { chartOptions })('#parasol-chart')` inside `useEffect` keyed on `[data, axes]`; destroy by clearing the container on cleanup. Container `div` rendered by React with fixed `id="parasol-chart"` and `className="parcoords"`, height 370, width 100% (ResizeObserver triggers `ps.render()` on width change). | ✅ | 2026-06-11 |
+| TASK-016 | Implement axis configuration in `ParasolPlot`: hide non-display columns via `ps.hideAxes(headers.filter(h => !axes.includes(h)))`; implement preferred-edge orientation by calling `ps.flipAxes(axesToFlip)` where `axesToFlip` reproduces the `invertForPreference` logic from `src/ParetoApp.jsx:235` (objective axes where `(dir === "min" && prefersTop) || (dir === "max" && !prefersTop)`). | ✅ | 2026-06-11 |
+| TASK-017 | Implement line coloring: `ps.color(d => frontColor(d._front))` when `colorBy === "front"`. Update on prop change via a lightweight `useEffect` calling `ps.color(...).render()` without re-instantiating. | ✅ | 2026-06-11 |
+| TASK-018 | Implement hover sync: subscribe to parcoords mouseover via `ps.charts[0].on("highlight", ...)` if available, else attach a `mousemove` handler using parcoords `getCentroids`/mark API; call `onHover(id)`. For inbound `highlightId` (table → chart), call `ps.mark([row])` / `ps.unmark()`. | ✅ | 2026-06-11 |
+| TASK-019 | Implement brush → table linking (REQ-007): register `ps.charts[0].on("brush", () => onBrush(ps.state.brushed.map(d => d._id)))`; in `ParetoApp`, store `brushedIds` state and filter the table view when non-null. Add a "Clear Brush" button calling `ps.brushReset()`. | ✅ | 2026-06-11 |
+| TASK-020 | Replace `<ParCoords .../>` usage in the parallel tab (`src/ParetoApp.jsx:1222-1231`) with `<ParasolPlot .../>`; pass `visibleData` so ε-front visibility toggles keep working (data filtered before parasol sees it). | ✅ | 2026-06-11 |
+| TASK-021 | Reproduce category-colored axis labels: after `ps.render()`, post-process axis label text elements (`.parcoords .dimension .label`) setting `fill` from `CATEGORY_COLORS[columnCategories[axis]]`; re-run after any `render()`. Document this as a candidate upstream feature (`dimensionTitleColor` option). | ✅ | 2026-06-11 |
+| TASK-022 | Delete `src/components/ParCoords.jsx` (custom D3 implementation) once parity checklist in TASK-023 passes. | ✅ | 2026-06-11 |
+| TASK-023 | Validate parity checklist: (a) brush on numeric axis filters lines and table; (b) hover line highlights table row and vice versa; (c) front colors match table badges; (d) string columns render as categorical axes; (e) Preferred @ Top/Bottom flips objective axes; (f) front visibility chips add/remove lines; (g) `npm run build` clean. | ✅ | 2026-06-11 |
 
 ### Implementation Phase 4 — Port parasol features: bundling and k-means clustering
 
@@ -87,12 +95,12 @@ Pareto Explorer currently renders its parallel coordinates view with a hand-roll
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-024 | Add sidebar section "RENDERING" with: smoothness `Slider` (0–0.25, step 0.01, default 0), bundling strength `Slider` (0–1, step 0.05, default 0), bundle dimension `Chip` selector (numeric columns, single-select, none = bundling off). Wire to `ParasolPlot` `bundling` prop → `ps.smoothness(v).render()`, `ps.bundleDimension(dim)`, `ps.bundlingStrength(v).render()`. Note: bundling requires a bundle dimension set first; disable strength slider until one is chosen. | | |
-| TASK-025 | Add sidebar section "CLUSTERING" with: enable toggle, `k` slider (2–10, step 1, default 3), cluster variable multi-select chips (default: all objective columns), standardize toggle (default on). Wire to `ParasolPlot` `clusterConfig` prop → `ps.cluster({ k, vars, palette, std, hidden: true })`. | | |
-| TASK-026 | Add "COLOR BY" toggle (Front | Cluster) to the sidebar; `cluster()` assigns its own palette, so when active, suppress TASK-017 front coloring; when switching back to Front, re-apply `ps.color(frontColor)` and `ps.resetSelections()` if needed. Use a light-theme-safe categorical palette (`d3.schemeTableau10`) for clusters. | | |
-| TASK-027 | Add cluster legend below the chart (swatch + "Cluster n" per cluster, mirroring the existing front legend at `src/ParetoApp.jsx:1236-1244`). | | |
-| TASK-028 | Add "Export brushed as CSV" button using `ps.exportData({ type: 'brushed' })` (falls back to all data when nothing brushed). | | |
-| TASK-029 | Validate: cluster with demo data (k=3, objectives as vars) shows 3 distinct line colors; bundling strength visibly bundles lines; export downloads a CSV containing only brushed rows; toggling Color By restores front colors exactly. | | |
+| TASK-024 | Add sidebar section "RENDERING" with: smoothness `Slider` (0–0.25, step 0.01, default 0), bundling strength `Slider` (0–1, step 0.05, default 0), bundle dimension `Chip` selector (numeric columns, single-select, none = bundling off). Wire to `ParasolPlot` `bundling` prop → `ps.smoothness(v).render()`, `ps.bundleDimension(dim)`, `ps.bundlingStrength(v).render()`. Note: bundling requires a bundle dimension set first; disable strength slider until one is chosen. | ✅ | 2026-06-11 |
+| TASK-025 | Add sidebar section "CLUSTERING" with: enable toggle, `k` slider (2–10, step 1, default 3), cluster variable multi-select chips (default: all objective columns), standardize toggle (default on). Wire to `ParasolPlot` `clusterConfig` prop → `ps.cluster({ k, vars, palette, std, hidden: true })`. | ✅ | 2026-06-11 |
+| TASK-026 | Add "COLOR BY" toggle (Front | Cluster) to the sidebar; `cluster()` assigns its own palette, so when active, suppress TASK-017 front coloring; when switching back to Front, re-apply `ps.color(frontColor)` and `ps.resetSelections()` if needed. Use a light-theme-safe categorical palette (`d3.schemeTableau10`) for clusters. | ✅ | 2026-06-11 |
+| TASK-027 | Add cluster legend below the chart (swatch + "Cluster n" per cluster, mirroring the existing front legend at `src/ParetoApp.jsx:1236-1244`). | ✅ | 2026-06-11 |
+| TASK-028 | Add "Export brushed as CSV" button using `ps.exportData({ type: 'brushed' })` (falls back to all data when nothing brushed). | ✅ | 2026-06-11 |
+| TASK-029 | Validate: cluster with demo data (k=3, objectives as vars) shows 3 distinct line colors; bundling strength visibly bundles lines; export downloads a CSV containing only brushed rows; toggling Color By restores front colors exactly. | ✅ | 2026-06-11 |
 
 ### Implementation Phase 5 — Dependency finalization and repository migration
 
@@ -101,7 +109,7 @@ Pareto Explorer currently renders its parallel coordinates view with a hand-roll
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
 | TASK-030 | After `parasol-es@2.0.0` is published to npm: replace the git dependency with `"parasol-es": "^2.0.0"` in `package.json`, run `npm install`, verify `npm run build` and the TASK-023 parity checklist. | | |
-| TASK-031 | Update `README.md`: describe parasol-es as the plotting engine, cite the Parasol paper (Raseman, Jacobson, Kasprzyk 2019, EMS 116:153-163, doi:10.1016/j.envsoft.2019.03.005), document the light theme and new bundling/clustering controls. | | |
+| TASK-031 | Update `README.md`: describe parasol-es as the plotting engine, cite the Parasol paper (Raseman, Jacobson, Kasprzyk 2019, EMS 116:153-163, doi:10.1016/j.envsoft.2019.03.005), document the light theme and new bundling/clustering controls. | ✅ | 2026-06-11 |
 | TASK-032 | Delete `dev_notes.txt` (superseded by this plan) or update it to point at `plan/refactor-parcoords-parasol-1.md`. | | |
 | TASK-033 | (Optional, requires ParasolJS org admin) Transfer `paretoexplorer` repo: GitHub Settings → Transfer ownership → ParasolJS. Pre-checks: no name collision in org, Vercel project re-linked to new repo slug post-transfer, local remote updated (`git remote set-url origin https://github.com/ParasolJS/paretoexplorer.git`). GitHub auto-redirects old URLs. | | |
 | TASK-034 | (Optional, post-transfer) Update `package.json` `repository`/`homepage` fields and any badge URLs to the ParasolJS org path. | | |

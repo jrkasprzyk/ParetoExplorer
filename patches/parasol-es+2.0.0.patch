@@ -1,0 +1,56 @@
+diff --git a/node_modules/parasol-es/dist/parasol.esm.js b/node_modules/parasol-es/dist/parasol.esm.js
+index 31c8150..3c6905d 100644
+--- a/node_modules/parasol-es/dist/parasol.esm.js
++++ b/node_modules/parasol-es/dist/parasol.esm.js
+@@ -203,7 +203,13 @@ function _toConsumableArray(r) {
+ 
+ // synchronize data between linked components
+ var sync = function sync(config, ps, flags) {
++  // Reentrancy guard: pc.brushReset() below re-fires the 'brush' event this
++  // handler is subscribed to, which would recurse until stack overflow.
++  var syncing = false;
+   return function () {
++    if (syncing) return;
++    syncing = true;
++    try {
+     //obtain array of brushed data for each chart
+     var brush_extents = [];
+     ps.linked.forEach(function (pc) {
+@@ -241,6 +247,9 @@ var sync = function sync(config, ps, flags) {
+         });
+       }
+     }
++    } finally {
++      syncing = false;
++    }
+   };
+ };
+ 
+diff --git a/node_modules/parasol-es/dist/parasol.js b/node_modules/parasol-es/dist/parasol.js
+index cf66161..c972759 100644
+--- a/node_modules/parasol-es/dist/parasol.js
++++ b/node_modules/parasol-es/dist/parasol.js
+@@ -201,7 +201,13 @@
+ 
+   // synchronize data between linked components
+   var sync = function sync(config, ps, flags) {
++    // Reentrancy guard: pc.brushReset() below re-fires the 'brush' event this
++    // handler is subscribed to, which would recurse until stack overflow.
++    var syncing = false;
+     return function () {
++      if (syncing) return;
++      syncing = true;
++      try {
+       //obtain array of brushed data for each chart
+       var brush_extents = [];
+       ps.linked.forEach(function (pc) {
+@@ -239,6 +245,9 @@
+           });
+         }
+       }
++      } finally {
++        syncing = false;
++      }
+     };
+   };
+ 

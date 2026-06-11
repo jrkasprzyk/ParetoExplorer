@@ -1,4 +1,4 @@
-Handoff for next session
+Handoff for next session, dated 2026-04-02. These may be irrelevant, given our plan to port to a new plotting package. Kept here for posterity, in case they are useful.
 
 Project
 - Pareto Explorer

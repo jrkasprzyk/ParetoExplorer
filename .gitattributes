@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# patch-package files are byte-sensitive; CRLF conversion breaks application
+patches/*.patch text eol=lf

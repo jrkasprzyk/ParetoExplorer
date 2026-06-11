@@ -1,0 +1,35 @@
+/* Theme-matching overrides for parasol-es / parcoord-es default stylesheet. */
+
+#parasol-chart {
+  position: relative;
+}
+
+.parcoords > svg,
+.parcoords > canvas {
+  font: 10px 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+}
+
+.parcoords {
+  background-color: transparent;
+}
+
+.parcoords text.label {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+}
+
+.parcoords .axis text {
+  fill: #5a6a85; /* C.textMuted */
+  font-size: 8px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+}
+
+.parcoords .axis line,
+.parcoords .axis path {
+  stroke: #bcc6d6; /* C.borderLight */
+}
+
+.parcoords rect.extent {
+  fill: rgba(124, 58, 237, 0.10); /* C.highlightDim */
+  stroke: rgba(124, 58, 237, 0.45);
+}

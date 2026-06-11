@@ -1,0 +1,120 @@
+diff --git a/node_modules/@jrkasprzyk/parcoord-es/dist/parcoords.esm.js b/node_modules/@jrkasprzyk/parcoord-es/dist/parcoords.esm.js
+index 0940312..4912a1a 100644
+--- a/node_modules/@jrkasprzyk/parcoord-es/dist/parcoords.esm.js
++++ b/node_modules/@jrkasprzyk/parcoord-es/dist/parcoords.esm.js
+@@ -266,9 +266,12 @@ var brushFor$1 = function brushFor(state, config, pc, events, brushGroup) {
+     var brushRangeMax = config.dimensions[axis].type === 'string' ? config.dimensions[axis].yscale.range()[config.dimensions[axis].yscale.range().length - 1] : config.dimensions[axis].yscale.range()[0];
+     var _brush = brushY(_selector).extent([[-15, 0], [15, brushRangeMax]]);
+     var convertBrushArguments = function convertBrushArguments(args) {
++      // d3 v7 brush listeners receive (event, datum); the axis is known from
++      // the enclosing brushFor closure and the selection comes from the event.
+       var args_array = Array.prototype.slice.call(args);
+-      var axis = args_array[0];
+-      var raw = brushSelection(args_array[2][0]) || [];
++      var event = args_array[0];
++      var node = state.brushNodes[axis];
++      var raw = (event && event.selection) || (node && brushSelection(node)) || [];
+ 
+       // handle hidden axes which will not have a yscale
+       var yscale = null;
+@@ -279,8 +282,8 @@ var brushFor$1 = function brushFor(state, config, pc, events, brushGroup) {
+       // ordinal scales do not have invert
+       var scaled = invertByScale(raw, yscale);
+       return {
+-        axis: args_array[0],
+-        node: args_array[2][0],
++        axis: axis,
++        node: node,
+         selection: {
+           raw: raw,
+           scaled: scaled
+@@ -288,7 +291,7 @@ var brushFor$1 = function brushFor(state, config, pc, events, brushGroup) {
+       };
+     };
+     _brush.on('start', function (event) {
+-      if (event.sourceEvent !== null) {
++      if (event.sourceEvent != null) {
+         events.call('brushstart', pc, config.brushed, convertBrushArguments(arguments));
+         if (typeof event.sourceEvent.stopPropagation === 'function') {
+           event.sourceEvent.stopPropagation();
+@@ -3333,10 +3336,16 @@ var computeCentroids = function computeCentroids(config, position, row) {
+       var cx = x + a * (position(p[i + 1]) - x);
+       var cy = y + a * (config.dimensions[p[i + 1]].yscale(row[p[i + 1]]) - y);
+       if (config.bundleDimension !== null) {
+-        var leftCentroid = config.clusterCentroids.get(config.dimensions[config.bundleDimension].yscale(row[config.bundleDimension])).get(p[i]);
+-        var rightCentroid = config.clusterCentroids.get(config.dimensions[config.bundleDimension].yscale(row[config.bundleDimension])).get(p[i + 1]);
+-        var centroid = 0.5 * (leftCentroid + rightCentroid);
+-        cy = centroid + (1 - config.bundlingStrength) * (cy - centroid);
++        // Guard against stale centroid maps (e.g. scales changed by a flip
++        // before centroids were recomputed): skip the bundling pull rather
++        // than crash on a missing key.
++        var rowCentroids = config.clusterCentroids && config.clusterCentroids.get(config.dimensions[config.bundleDimension].yscale(row[config.bundleDimension]));
++        if (rowCentroids) {
++          var leftCentroid = rowCentroids.get(p[i]);
++          var rightCentroid = rowCentroids.get(p[i + 1]);
++          var centroid = 0.5 * (leftCentroid + rightCentroid);
++          cy = centroid + (1 - config.bundlingStrength) * (cy - centroid);
++        }
+       }
+       centroids.push(new Vector([cx, cy]));
+     }
+diff --git a/node_modules/@jrkasprzyk/parcoord-es/dist/parcoords.js b/node_modules/@jrkasprzyk/parcoord-es/dist/parcoords.js
+index 0ae2df1..951db0d 100644
+--- a/node_modules/@jrkasprzyk/parcoord-es/dist/parcoords.js
++++ b/node_modules/@jrkasprzyk/parcoord-es/dist/parcoords.js
+@@ -262,9 +262,12 @@
+       var brushRangeMax = config.dimensions[axis].type === 'string' ? config.dimensions[axis].yscale.range()[config.dimensions[axis].yscale.range().length - 1] : config.dimensions[axis].yscale.range()[0];
+       var _brush = d3Brush.brushY(_selector).extent([[-15, 0], [15, brushRangeMax]]);
+       var convertBrushArguments = function convertBrushArguments(args) {
++        // d3 v7 brush listeners receive (event, datum); the axis is known from
++        // the enclosing brushFor closure and the selection comes from the event.
+         var args_array = Array.prototype.slice.call(args);
+-        var axis = args_array[0];
+-        var raw = d3Brush.brushSelection(args_array[2][0]) || [];
++        var event = args_array[0];
++        var node = state.brushNodes[axis];
++        var raw = (event && event.selection) || (node && d3Brush.brushSelection(node)) || [];
+ 
+         // handle hidden axes which will not have a yscale
+         var yscale = null;
+@@ -275,8 +278,8 @@
+         // ordinal scales do not have invert
+         var scaled = invertByScale(raw, yscale);
+         return {
+-          axis: args_array[0],
+-          node: args_array[2][0],
++          axis: axis,
++          node: node,
+           selection: {
+             raw: raw,
+             scaled: scaled
+@@ -284,7 +287,7 @@
+         };
+       };
+       _brush.on('start', function (event) {
+-        if (event.sourceEvent !== null) {
++        if (event.sourceEvent != null) {
+           events.call('brushstart', pc, config.brushed, convertBrushArguments(arguments));
+           if (typeof event.sourceEvent.stopPropagation === 'function') {
+             event.sourceEvent.stopPropagation();
+@@ -3329,10 +3332,16 @@
+         var cx = x + a * (position(p[i + 1]) - x);
+         var cy = y + a * (config.dimensions[p[i + 1]].yscale(row[p[i + 1]]) - y);
+         if (config.bundleDimension !== null) {
+-          var leftCentroid = config.clusterCentroids.get(config.dimensions[config.bundleDimension].yscale(row[config.bundleDimension])).get(p[i]);
+-          var rightCentroid = config.clusterCentroids.get(config.dimensions[config.bundleDimension].yscale(row[config.bundleDimension])).get(p[i + 1]);
+-          var centroid = 0.5 * (leftCentroid + rightCentroid);
+-          cy = centroid + (1 - config.bundlingStrength) * (cy - centroid);
++          // Guard against stale centroid maps (e.g. scales changed by a flip
++          // before centroids were recomputed): skip the bundling pull rather
++          // than crash on a missing key.
++          var rowCentroids = config.clusterCentroids && config.clusterCentroids.get(config.dimensions[config.bundleDimension].yscale(row[config.bundleDimension]));
++          if (rowCentroids) {
++            var leftCentroid = rowCentroids.get(p[i]);
++            var rightCentroid = rowCentroids.get(p[i + 1]);
++            var centroid = 0.5 * (leftCentroid + rightCentroid);
++            cy = centroid + (1 - config.bundlingStrength) * (cy - centroid);
++          }
+         }
+         centroids.push(new Vector([cx, cy]));
+       }

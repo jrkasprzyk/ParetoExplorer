@@ -1,450 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import * as d3 from "d3";
-import _ from "lodash";
-
-const C = {
-  bg: "#0b1121", surface: "#111c32", surfaceAlt: "#162040",
-  border: "#253560", borderLight: "#354a7a",
-  text: "#e0e7f1", textMuted: "#8899b8", textDim: "#556688",
-  accent: "#00e8a2", accentDim: "rgba(0,232,162,0.12)",
-  front0: "#00e8a2", front1: "#5b8def", front2: "#c084fc",
-  front3: "#fb923c", frontN: "#64748b",
-  dominated: "#f43f5e", dominatedDim: "rgba(244,63,94,0.12)",
-  highlight: "#a78bfa", highlightDim: "rgba(167,139,250,0.15)",
-};
-const FM = `'JetBrains Mono','Fira Code','SF Mono',monospace`;
-const FB = `'DM Sans','Segoe UI',system-ui,sans-serif`;
-
-function parseCSV(text) {
-  const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
-  if (lines.length < 2) return { headers: [], rows: [], columnRoles: {} };
-
-  const normalizeCell = (value) => String(value || "").replace(/^"|"$/g, '').trim();
-
-  function split(line) {
-    const r = []; let cur = "", inQ = false;
-    for (const ch of line) {
-      if (ch === '"') inQ = !inQ;
-      else if (ch === ',' && !inQ) { r.push(cur.trim()); cur = ""; }
-      else cur += ch;
-    }
-    r.push(cur.trim());
-    return r;
-  }
-
-  const inferRole = (value) => {
-    const v = normalizeCell(value).toLowerCase();
-    if (!v) return null;
-    if (/(decision|decisions|policy|policies|variable|variables|input|inputs|lever|levers)/.test(v)) {
-      return "decision";
-    }
-    if (/(objective|objectives|outcome|outcomes|metric|metrics|goal|goals|reliability)/.test(v)) {
-      return "objective";
-    }
-    return null;
-  };
-
-  const isLikelyHeaderRow = (cells) => {
-    if (!cells.length) return false;
-    const cleaned = cells.map(normalizeCell);
-    const nonEmpty = cleaned.filter(c => c !== "").length;
-    if (!nonEmpty) return false;
-    const numeric = cleaned.filter(c => c !== "" && !Number.isNaN(Number(c))).length;
-    return nonEmpty >= Math.ceil(cells.length * 0.5) && numeric <= Math.floor(cells.length * 0.25);
-  };
-
-  const isLikelyRoleBandRow = (cells) => {
-    if (!cells.length) return false;
-    const cleaned = cells.map(normalizeCell);
-    const roles = cleaned.map(inferRole).filter(Boolean);
-    // Many dual-header exports use a sparse first row with only broad role labels
-    // (e.g., "Decision Variables" and "Objectives") and blanks elsewhere.
-    return roles.length > 0;
-  };
-
-  const isLikelyDataRow = (cells) => {
-    if (!cells.length) return false;
-    const cleaned = cells.map(normalizeCell);
-    const nonEmpty = cleaned.filter(c => c !== "").length;
-    if (!nonEmpty) return false;
-    const numeric = cleaned.filter(c => c !== "" && !Number.isNaN(Number(c))).length;
-    return numeric >= Math.ceil(nonEmpty * 0.4);
-  };
-
-  const makeUniqueHeaders = (candidateHeaders) => {
-    const used = new Map();
-    return candidateHeaders.map((rawHeader, idx) => {
-      const base = normalizeCell(rawHeader) || `Column_${idx + 1}`;
-      const count = used.get(base) || 0;
-      used.set(base, count + 1);
-      return count === 0 ? base : `${base}_${count + 1}`;
-    });
-  };
-
-  const roleBandsForRow = (cells) => {
-    const bands = [];
-    let activeRole = null;
-    cells.forEach((cell, idx) => {
-      const inferred = inferRole(cell);
-      if (inferred) activeRole = inferred;
-      bands[idx] = activeRole;
-    });
-    return bands;
-  };
-
-  const parsedLines = lines.map(split);
-  const first = parsedLines[0] || [];
-  const second = parsedLines[1] || [];
-  const third = parsedLines[2] || [];
-
-  const hasDualHeader =
-    parsedLines.length >= 3 &&
-    (isLikelyHeaderRow(first) || isLikelyRoleBandRow(first)) &&
-    isLikelyHeaderRow(second) &&
-    isLikelyDataRow(third);
-
-  let headers = [];
-  let dataStart = 1;
-  const columnRoles = {};
-
-  if (hasDualHeader) {
-    headers = makeUniqueHeaders(second);
-    dataStart = 2;
-    const roleBands = roleBandsForRow(first);
-    headers.forEach((h, j) => {
-      const inferred = roleBands[j] || inferRole(second[j]);
-      if (inferred) columnRoles[h] = inferred;
-    });
-  } else {
-    headers = makeUniqueHeaders(first);
-    headers.forEach((h, j) => {
-      const inferred = inferRole(first[j]);
-      if (inferred) columnRoles[h] = inferred;
-    });
-  }
-
-  const rows = lines.slice(dataStart).map((line, i) => {
-    const vals = split(line);
-    const row = { _id: i };
-    headers.forEach((h, j) => {
-      const raw = normalizeCell(vals[j] || "");
-      const num = parseFloat(raw);
-      row[h] = (raw !== "" && !isNaN(num)) ? num : raw;
-    });
-    return row;
-  });
-
-  return { headers, rows, columnRoles };
-}
-
-function epsilonDominates(a, b, objs, epsilons, dirs) {
-  let dominated = false;
-  for (const o of objs) {
-    const dir = dirs[o] === "max" ? -1 : 1;
-    const av = dir * (typeof a[o] === "number" ? a[o] : Infinity);
-    const bv = dir * (typeof b[o] === "number" ? b[o] : Infinity);
-    const e = Math.max(epsilons[o] ?? 0.1, 1e-12);
-    const ab = Math.floor(av / e), bb = Math.floor(bv / e);
-    if (ab > bb) return false;
-    if (ab < bb) dominated = true;
-  }
-  return dominated;
-}
-
-function epsilonSort(rows, objs, epsilons, dirs) {
-  if (!objs.length) return [];
-  const fronts = [];
-  let rem = rows.map(r => ({ ...r }));
-  let fi = 0;
-  while (rem.length > 0 && fi < 20) {
-    const dom = new Set();
-    for (let i = 0; i < rem.length; i++) {
-      for (let j = 0; j < rem.length; j++) {
-        if (i === j || dom.has(i)) continue;
-        if (epsilonDominates(rem[j], rem[i], objs, epsilons, dirs)) { dom.add(i); break; }
-      }
-    }
-    const front = [], next = [];
-    for (let i = 0; i < rem.length; i++) {
-      if (dom.has(i)) next.push(rem[i]);
-      else front.push({ ...rem[i], _front: fi });
-    }
-    if (!front.length) { rem.forEach(r => front.push({ ...r, _front: fi })); fronts.push(front); break; }
-    fronts.push(front);
-    rem = next;
-    fi++;
-  }
-  if (rem.length) fronts.push(rem.map(r => ({ ...r, _front: fi })));
-  return fronts;
-}
-
-function wScore(row, objs, weights, dirs, stats) {
-  let s = 0, tw = 0;
-  for (const o of objs) {
-    const w = weights[o] || 0;
-    if (!w) continue;
-    const v = typeof row[o] === "number" ? row[o] : 0;
-    const st = stats[o];
-    if (!st || st.max === st.min) continue;
-    const norm = (v - st.min) / (st.max - st.min);
-    s += w * (dirs[o] === "max" ? norm : 1 - norm);
-    tw += w;
-  }
-  return tw > 0 ? s / tw : 0;
-}
-
-function frontColor(f) {
-  return [C.front0, C.front1, C.front2, C.front3][f] || C.frontN;
-}
-
-function ParCoords({ data, axes, directions, objectives, preferredObjectiveEdge, columnCategories, highlightId, onHover }) {
-  const svgRef = useRef(null);
-  const containerRef = useRef(null);
-  const [dims, setDims] = useState({ w: 800, h: 370 });
-  const brushesRef = useRef({});
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const obs = new ResizeObserver(entries => {
-      for (const e of entries) setDims({ w: e.contentRect.width, h: Math.max(280, e.contentRect.height) });
-    });
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (!svgRef.current || !data.length || !axes.length) return;
-    const mg = { top: 44, right: 28, bottom: 18, left: 28 };
-    const w = dims.w - mg.left - mg.right;
-    const h = dims.h - mg.top - mg.bottom;
-    const svg = d3.select(svgRef.current);
-    svg.selectAll("*").remove();
-    svg.attr("width", dims.w).attr("height", dims.h);
-    const g = svg.append("g").attr("transform", `translate(${mg.left},${mg.top})`);
-
-    const x = d3.scalePoint().domain(axes).range([0, w]).padding(0.08);
-    const axisMeta = {};
-    const prefersTop = preferredObjectiveEdge !== "bottom";
-    axes.forEach(ax => {
-      const vals = data.map(d => d[ax]).filter(v => v !== null && v !== undefined && v !== "");
-      const numericVals = vals.filter(v => typeof v === "number" && Number.isFinite(v));
-      const numericShare = vals.length ? numericVals.length / vals.length : 0;
-      const isObjectiveAxis = objectives.includes(ax);
-      const axisDir = directions[ax] === "max" ? "max" : "min";
-      const invertForPreference = isObjectiveAxis && ((axisDir === "min" && prefersTop) || (axisDir === "max" && !prefersTop));
-      const yRange = invertForPreference ? [0, h] : [h, 0];
-      if (numericVals.length && numericShare >= 0.7) {
-        const ext = d3.extent(numericVals);
-        const pad = ((ext[1] || 0) - (ext[0] || 0)) * 0.1 || 1;
-        axisMeta[ax] = {
-          type: "numeric",
-          scale: d3.scaleLinear().domain([ext[0] - pad, ext[1] + pad]).range(yRange),
-        };
-      } else {
-        const categories = Array.from(new Set(vals.map(v => String(v))));
-        axisMeta[ax] = {
-          type: "categorical",
-          scale: d3.scalePoint().domain(categories).range([h, 0]).padding(0.5),
-        };
-      }
-    });
-
-    axes.forEach(ax => {
-      const xP = x(ax);
-      const ag = g.append("g").attr("transform", `translate(${xP},0)`);
-      const axisCategory = columnCategories[ax] || "metric";
-      const axisColor = CATEGORY_COLORS[axisCategory] || C.textMuted;
-      ag.append("line").attr("y1", 0).attr("y2", h).attr("stroke", axisColor).attr("stroke-opacity", 0.55).attr("stroke-width", 1);
-      const meta = axisMeta[ax];
-      const axis = meta.type === "numeric"
-        ? d3.axisLeft(meta.scale).ticks(5).tickSize(-5)
-        : d3.axisLeft(meta.scale).tickSize(-5).tickFormat(v => {
-          const s = String(v);
-          return s.length > 11 ? s.slice(0, 9) + "…" : s;
-        });
-      const aG = ag.call(axis);
-      aG.selectAll("text").attr("fill", C.textDim).attr("font-size", "8px").attr("font-family", FM);
-      aG.selectAll("line").attr("stroke", axisColor).attr("stroke-opacity", 0.45);
-      aG.select(".domain").remove();
-      const arrow = directions[ax] === "max" ? "▲" : directions[ax] === "min" ? "▼" : "•";
-      const label = ax.length > 16 ? ax.slice(0, 14) + "…" : ax;
-      ag.append("text").attr("y", -18).attr("text-anchor", "middle")
-        .attr("fill", axisColor).attr("font-size", "10px").attr("font-family", FM)
-        .text(`${arrow} ${label}`);
-
-      if (meta.type === "numeric") {
-        const brush = d3.brushY().extent([[-12, 0], [12, h]])
-          .on("brush end", (event) => {
-            if (!event.selection) {
-              delete brushesRef.current[ax];
-            } else {
-              const [y0, y1] = event.selection;
-              brushesRef.current[ax] = [meta.scale.invert(y1), meta.scale.invert(y0)];
-            }
-            // Update line visibility
-            svg.selectAll(".pc-line")
-              .attr("stroke-opacity", d => {
-                const brushKeys = Object.keys(brushesRef.current);
-                if (!brushKeys.length) return d._front === 0 ? 0.85 : Math.max(0.06, 0.4 - (d._front ?? 5) * 0.08);
-                const inBrush = brushKeys.every(k => {
-                  const [lo, hi] = brushesRef.current[k];
-                  const v = d[k];
-                  return typeof v === "number" && v >= lo && v <= hi;
-                });
-                return inBrush ? 0.9 : 0.03;
-              })
-              .attr("stroke-width", d => {
-                const brushKeys = Object.keys(brushesRef.current);
-                if (!brushKeys.length) return d._front === 0 ? 2.2 : 1;
-                const inBrush = brushKeys.every(k => {
-                  const [lo, hi] = brushesRef.current[k];
-                  const v = d[k];
-                  return typeof v === "number" && v >= lo && v <= hi;
-                });
-                return inBrush ? 2.5 : 0.5;
-              });
-          });
-        ag.append("g").attr("class", "brush").call(brush)
-          .selectAll("rect").attr("fill", C.highlightDim).attr("rx", 3);
-      }
-    });
-
-    const line = d3.line().defined(d => d[1] !== null).x(d => d[0]).y(d => d[1]).curve(d3.curveMonotoneX);
-
-    g.selectAll(".pc-line").data(data).enter()
-      .append("path").attr("class", "pc-line")
-      .attr("d", d => {
-        const pts = axes.map(ax => {
-          const meta = axisMeta[ax];
-          if (!meta) return [x(ax), null];
-          if (meta.type === "numeric") {
-            const v = typeof d[ax] === "number" ? d[ax] : null;
-            return [x(ax), v !== null ? meta.scale(v) : null];
-          }
-          const raw = d[ax];
-          if (raw === null || raw === undefined || raw === "") return [x(ax), null];
-          const y = meta.scale(String(raw));
-          return [x(ax), y ?? null];
-        });
-        return line(pts);
-      })
-      .attr("fill", "none")
-      .attr("stroke", d => frontColor(d._front ?? 999))
-      .attr("stroke-width", d => d._front === 0 ? 2.2 : 1)
-      .attr("stroke-opacity", d => d._front === 0 ? 0.85 : Math.max(0.06, 0.4 - (d._front ?? 5) * 0.08))
-      .style("cursor", "pointer")
-      .on("mouseenter", function (ev, d) {
-        d3.select(this).attr("stroke", C.highlight).attr("stroke-width", 3).attr("stroke-opacity", 1).raise();
-        onHover?.(d._id);
-      })
-      .on("mouseleave", function (ev, d) {
-        d3.select(this)
-          .attr("stroke", frontColor(d._front ?? 999))
-          .attr("stroke-width", d._front === 0 ? 2.2 : 1)
-          .attr("stroke-opacity", d._front === 0 ? 0.85 : Math.max(0.06, 0.4 - (d._front ?? 5) * 0.08));
-        onHover?.(null);
-      });
-
-    if (highlightId !== null) {
-      const hd = data.find(d => d._id === highlightId);
-      if (hd) {
-        const pts = axes.map(ax => {
-          const meta = axisMeta[ax];
-          if (!meta) return [x(ax), null];
-          if (meta.type === "numeric") {
-            const v = typeof hd[ax] === "number" ? hd[ax] : null;
-            return [x(ax), v !== null ? meta.scale(v) : null];
-          }
-          const raw = hd[ax];
-          if (raw === null || raw === undefined || raw === "") return [x(ax), null];
-          const y = meta.scale(String(raw));
-          return [x(ax), y ?? null];
-        });
-        g.append("path").attr("d", line(pts)).attr("fill", "none")
-          .attr("stroke", C.highlight).attr("stroke-width", 3.5).attr("stroke-opacity", 1)
-          .style("pointer-events", "none");
-      }
-    }
-  }, [data, axes, directions, highlightId, dims]);
-
-  return (
-    <div ref={containerRef} style={{ width: "100%", height: 370 }}>
-      <svg ref={svgRef} style={{ width: "100%", height: "100%" }} />
-    </div>
-  );
-}
-
-function Chip({ label, active, onClick, color }) {
-  return (
-    <button onClick={onClick} style={{
-      padding: "4px 10px", borderRadius: 6, fontSize: 11, fontFamily: FM,
-      border: `1px solid ${active ? (color || C.accent) : C.border}`,
-      background: active ? (color ? color + "22" : C.accentDim) : "transparent",
-      color: active ? (color || C.accent) : C.textMuted,
-      cursor: "pointer", transition: "all 0.15s", whiteSpace: "nowrap",
-    }}>
-      {label}
-    </button>
-  );
-}
-
-function Slider({ label, value, onChange, min, max, step }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <span style={{ fontSize: 10, color: C.textMuted, fontFamily: FM, minWidth: 20, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 70 }}>{label}</span>
-      <input type="range" min={min} max={max} step={step} value={value}
-        onChange={e => onChange(parseFloat(e.target.value))}
-        style={{ flex: 1, accentColor: C.accent, height: 3 }} />
-      <span style={{ fontSize: 10, color: C.accent, fontFamily: FM, minWidth: 36, textAlign: "right" }}>
-        {value.toFixed(step < 0.01 ? 3 : step < 0.1 ? 2 : 1)}
-      </span>
-    </div>
-  );
-}
-
-function cellBg(val, min, max, dir) {
-  if (typeof val !== "number" || min === max) return "transparent";
-  let t = (val - min) / (max - min);
-  if (dir === "min") t = 1 - t;
-  const r = Math.round(244 * (1 - t) + 0 * t);
-  const g = Math.round(63 * (1 - t) + 232 * t);
-  const b = Math.round(94 * (1 - t) + 162 * t);
-  return `rgba(${r},${g},${b},0.15)`;
-}
-
-const DEMO = `Name,Decision Group,Decision Mode,Cost,Performance,Reliability,Weight,Power
-Alpha-1,Group-A,Conservative,45000,82,0.94,120,340
-Beta-2,Group-B,Aggressive,62000,95,0.97,145,520
-Gamma-3,Group-A,Conservative,38000,71,0.89,98,280
-Delta-4,Group-C,Balanced,55000,88,0.96,130,460
-Epsilon-5,Group-B,Aggressive,72000,97,0.99,160,580
-Zeta-6,Group-A,Balanced,41000,75,0.91,105,300
-Eta-7,Group-A,Balanced,48000,85,0.93,125,380
-Theta-8,Group-C,Aggressive,67000,93,0.98,150,540
-Iota-9,Group-A,Conservative,35000,68,0.87,92,260
-Kappa-10,Group-C,Balanced,58000,90,0.95,135,480
-Lambda-11,Group-B,Conservative,43000,78,0.92,115,320
-Mu-12,Group-C,Aggressive,69000,96,0.98,155,560
-Nu-13,Group-A,Conservative,37000,70,0.88,95,270
-Xi-14,Group-B,Balanced,51000,86,0.94,128,420
-Omicron-15,Group-C,Aggressive,61000,92,0.97,142,500`;
-
-const DEFAULT_CATEGORY_ORDER = ["solution", "decision", "objective", "constraint", "metric"];
-const CATEGORY_LABELS = {
-  solution: "Solution ID",
-  decision: "Decision Variables",
-  objective: "Objectives",
-  constraint: "Constraints",
-  metric: "Metrics",
-};
-const CATEGORY_COLORS = {
-  solution: "#a78bfa",
-  decision: "#5b8def",
-  objective: "#00e8a2",
-  constraint: "#f43f5e",
-  metric: "#8899b8",
-};
+import { C, FM, FB, CATEGORY_COLORS, CATEGORY_LABELS, DEFAULT_CATEGORY_ORDER, frontColor, cellBg } from "./theme.js";
+import { parseCSV, DEMO } from "./lib/csv.js";
+import { epsilonSort, wScore } from "./lib/pareto.js";
+import ParasolPlot, { CLUSTER_PALETTE } from "./components/ParasolPlot.jsx";
+import { Chip, Slider } from "./components/controls.jsx";
 
 export default function ParetoApp() {
   const [headers, setHeaders] = useState([]);
@@ -475,7 +35,17 @@ export default function ParetoApp() {
   const [showPreferenceControls, setShowPreferenceControls] = useState(false);
   const [preferredObjectiveEdge, setPreferredObjectiveEdge] = useState("top");
   const [loaded, setLoaded] = useState(false);
+  const [brushedIds, setBrushedIds] = useState(null);
+  const [colorBy, setColorBy] = useState("front");
+  const [clusterEnabled, setClusterEnabled] = useState(false);
+  const [clusterK, setClusterK] = useState(3);
+  const [clusterVars, setClusterVars] = useState([]);
+  const [clusterStd, setClusterStd] = useState(true);
+  const [bundleDim, setBundleDim] = useState(null);
+  const [bundleStrength, setBundleStrength] = useState(0);
+  const [smoothness, setSmoothness] = useState(0);
   const fileRef = useRef(null);
+  const parasolRef = useRef(null);
 
   const numericCols = useMemo(() => headers.filter(h => rows.some(r => typeof r[h] === "number")), [headers, rows]);
   const stringCols = useMemo(() => headers.filter(h => rows.some(r => typeof r[h] === "string" && r[h] !== "")), [headers, rows]);
@@ -639,6 +209,21 @@ export default function ParetoApp() {
     });
   }, [sortedData, visibleFronts]);
 
+  // Brush in the parasol chart filters the table view (REQ-007); the chart
+  // itself renders the brush natively, so only the table consumes this.
+  const tableData = useMemo(() => {
+    if (!brushedIds) return visibleData;
+    const set = new Set(brushedIds);
+    return visibleData.filter(r => set.has(r._id));
+  }, [visibleData, brushedIds]);
+
+  const handleBrush = useCallback(ids => setBrushedIds(ids), []);
+
+  // Cluster variable default: numeric objective columns (TASK-025).
+  useEffect(() => {
+    setClusterVars(objectives.filter(o => numericCols.includes(o)));
+  }, [objectives, numericCols]);
+
   const startImportSetup = useCallback((csvText, sourceName = "Uploaded CSV") => {
     const { headers: h, rows: r, columnRoles } = parseCSV(csvText);
     const inferredCategories = {};
@@ -693,7 +278,8 @@ export default function ParetoApp() {
     setDirections(dirs);
     const w = {}; nc.forEach(c => w[c] = 1);
     setWeights(w);
-    setFilterText({}); setSortCol(null); setLoaded(true); setTab("table");
+    setFilterText({}); setSortCol(null); setBrushedIds(null); setBundleDim(null);
+    setLoaded(true); setTab("table");
     setImportDraft(null);
   }, [importDraft]);
 
@@ -947,6 +533,7 @@ export default function ParetoApp() {
         <span style={{ color: C.textMuted }}>Pareto <span style={{ color: C.front0 }}>{shownParetoCount}</span><span style={{ color: C.textDim }}> / {paretoCount}</span></span>
         <span style={{ color: C.textMuted }}>Fronts <span style={{ color: C.text }}>{visibleFrontCount}</span><span style={{ color: C.textDim }}> / {fronts.length}</span></span>
         <span style={{ color: C.textMuted }}>Obj <span style={{ color: C.accent }}>{objectives.length}</span></span>
+        {brushedIds && <span style={{ color: C.highlight }}>Brushed {brushedIds.length}</span>}
         <span style={{ color: C.textMuted }}>Source <span style={{ color: C.highlight }}>{sourceLabel}</span></span>
         <div style={{ flex: 1 }} />
         <Chip label={showOnlyPareto ? "Pareto Only ✓" : "Show All"} active={showOnlyPareto} onClick={() => setShowOnlyPareto(p => !p)} />
@@ -1132,6 +719,89 @@ export default function ParetoApp() {
               )}
             </div>
           </div>
+
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>RENDERING</div>
+            <div style={{ marginBottom: 5 }}>
+              <Slider label="smooth" value={smoothness} onChange={setSmoothness} min={0} max={0.25} step={0.01} />
+            </div>
+            <div style={{ fontSize: 9, fontFamily: FM, color: C.textDim, marginBottom: 4 }}>Bundle dimension</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 5 }}>
+              {numericCols.filter(col => displayCols.includes(col)).map(col => (
+                <Chip
+                  key={col}
+                  label={col.length > 14 ? col.slice(0, 12) + "…" : col}
+                  active={bundleDim === col}
+                  onClick={() => setBundleDim(bundleDim === col ? null : col)}
+                  color={C.highlight}
+                />
+              ))}
+            </div>
+            <div style={{ marginBottom: 5, opacity: bundleDim ? 1 : 0.45, pointerEvents: bundleDim ? "auto" : "none" }}>
+              <Slider label="bundle" value={bundleStrength} onChange={setBundleStrength} min={0} max={1} step={0.05} />
+            </div>
+            <p style={{ fontSize: 9, color: C.textDim, lineHeight: 1.3 }}>
+              Bundling groups lines by the selected dimension; pick one to enable the strength slider.
+            </p>
+          </div>
+
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+              <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, letterSpacing: 1 }}>CLUSTERING</div>
+              <button
+                onClick={() => setClusterEnabled(p => !p)}
+                style={{ padding: "2px 7px", borderRadius: 5, border: `1px solid ${clusterEnabled ? C.accent : C.border}`, background: clusterEnabled ? C.accentDim : "transparent", color: clusterEnabled ? C.accent : C.textMuted, fontFamily: FM, fontSize: 9, cursor: "pointer" }}
+              >
+                {clusterEnabled ? "On" : "Off"}
+              </button>
+            </div>
+            {clusterEnabled && (
+              <>
+                <div style={{ marginBottom: 5 }}>
+                  <Slider label="k" value={clusterK} onChange={v => setClusterK(Math.round(v))} min={2} max={10} step={1} />
+                </div>
+                <div style={{ fontSize: 9, fontFamily: FM, color: C.textDim, marginBottom: 4 }}>Cluster variables</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 5 }}>
+                  {numericCols.map(col => (
+                    <Chip
+                      key={col}
+                      label={col.length > 14 ? col.slice(0, 12) + "…" : col}
+                      active={clusterVars.includes(col)}
+                      onClick={() => setClusterVars(p => p.includes(col) ? p.filter(c => c !== col) : [...p, col])}
+                      color={CATEGORY_COLORS.objective}
+                    />
+                  ))}
+                </div>
+                <Chip
+                  label={clusterStd ? "Standardize ✓" : "Standardize"}
+                  active={clusterStd}
+                  onClick={() => setClusterStd(p => !p)}
+                />
+                {clusterVars.length === 0 && (
+                  <p style={{ fontSize: 9, color: C.dominated, marginTop: 4 }}>Select at least one variable to cluster.</p>
+                )}
+                <p style={{ fontSize: 9, color: C.textDim, marginTop: 4, lineHeight: 1.3 }}>
+                  k-means over the selected variables; standardize converts values to z-scores for unbiased clusters.
+                </p>
+              </>
+            )}
+          </div>
+
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6, letterSpacing: 1 }}>COLOR BY</div>
+            <div style={{ display: "flex", gap: 5 }}>
+              <Chip label="Front" active={colorBy === "front"} onClick={() => setColorBy("front")} color={C.front0} />
+              <Chip
+                label="Cluster"
+                active={colorBy === "cluster"}
+                onClick={() => setColorBy("cluster")}
+                color={clusterEnabled && clusterVars.length > 0 ? C.highlight : C.textDim}
+              />
+            </div>
+            {colorBy === "cluster" && (!clusterEnabled || clusterVars.length === 0) && (
+              <p style={{ fontSize: 9, color: C.textDim, marginTop: 4 }}>Enable clustering to see cluster colors.</p>
+            )}
+          </div>
         </div>
 
         {/* Main */}
@@ -1198,11 +868,35 @@ export default function ParetoApp() {
             </div>
           )}
 
-          {tab === "parallel" && (
-            <div style={{ padding: 14 }}>
+          {/* Parallel view stays mounted (display toggle) so the parasol chart
+              and its brushes survive tab switches. */}
+          {loaded && (
+            <div style={{ padding: 14, display: tab === "parallel" ? "block" : "none" }}>
               <div style={{ background: C.surface, borderRadius: 10, border: `1px solid ${C.border}`, padding: 10, marginBottom: 10 }}>
-                <div style={{ fontSize: 10, fontFamily: FM, color: C.textDim, marginBottom: 6 }}>
-                  Drag on axes to brush/filter · Hover lines to inspect · Pareto-style linked interaction
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
+                  <span style={{ fontSize: 10, fontFamily: FM, color: C.textDim }}>
+                    Drag on axes to brush · Brushing filters the table · Hover table rows to highlight lines
+                  </span>
+                  <div style={{ flex: 1 }} />
+                  {brushedIds && (
+                    <span style={{ fontSize: 10, fontFamily: FM, color: C.highlight }}>
+                      {brushedIds.length} brushed
+                    </span>
+                  )}
+                  <button
+                    onClick={() => parasolRef.current?.clearBrush()}
+                    disabled={!brushedIds}
+                    style={{ padding: "3px 9px", borderRadius: 5, border: `1px solid ${brushedIds ? C.highlight : C.border}`, background: brushedIds ? C.highlightDim : "transparent", color: brushedIds ? C.highlight : C.textDim, fontFamily: FM, fontSize: 10, cursor: brushedIds ? "pointer" : "default" }}
+                  >
+                    Clear Brush
+                  </button>
+                  <button
+                    onClick={() => parasolRef.current?.exportBrushed()}
+                    style={{ padding: "3px 9px", borderRadius: 5, border: `1px solid ${C.border}`, background: "transparent", color: C.textMuted, fontFamily: FM, fontSize: 10, cursor: "pointer" }}
+                    title="Download brushed rows as CSV (all rows when nothing is brushed)"
+                  >
+                    Export CSV
+                  </button>
                 </div>
                 <div style={{ fontSize: 9, fontFamily: FM, color: C.textDim, marginBottom: 8 }}>
                   Axes reflect categorized columns from Label, Decisions, Objectives, Constraints, Metrics, and custom groups.
@@ -1218,8 +912,9 @@ export default function ParetoApp() {
                     </span>
                   ))}
                 </div>
-                {displayCols.length > 0 ? (
-                  <ParCoords
+                {displayCols.length > 0 && visibleData.length > 0 ? (
+                  <ParasolPlot
+                    ref={parasolRef}
                     data={visibleData}
                     axes={displayCols}
                     directions={directions}
@@ -1227,20 +922,36 @@ export default function ParetoApp() {
                     preferredObjectiveEdge={preferredObjectiveEdge}
                     columnCategories={columnCategories}
                     highlightId={highlightId}
-                    onHover={setHighlightId}
+                    colorBy={colorBy}
+                    clusterConfig={{ enabled: clusterEnabled && clusterVars.length > 0, k: clusterK, vars: clusterVars, std: clusterStd }}
+                    bundling={{ dimension: bundleDim, strength: bundleStrength, smoothness }}
+                    onBrush={handleBrush}
                   />
                 ) : (
-                  <div style={{ padding: 60, textAlign: "center", color: C.textDim, fontSize: 13 }}>Select at least one decision or objective column.</div>
+                  <div style={{ padding: 60, textAlign: "center", color: C.textDim, fontSize: 13 }}>
+                    {displayCols.length === 0 ? "Select at least one decision or objective column." : "No rows match filters or visible fronts."}
+                  </div>
                 )}
               </div>
               <div style={{ display: "flex", gap: 14, padding: "6px 10px", fontSize: 10, fontFamily: FM, color: C.textMuted, flexWrap: "wrap" }}>
-                {availableFronts.slice(0, 8).map((i) => (
-                  <span key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <span style={{ width: 12, height: 3, background: frontColor(i), borderRadius: 2, display: "inline-block" }} />
-                    Front {i}{i === 0 ? " (Pareto)" : ""}{visibleFronts[i] === false ? " (hidden)" : ""}
-                  </span>
-                ))}
-                {availableFronts.length > 8 && <span>+{availableFronts.length - 8} more</span>}
+                {colorBy === "cluster" && clusterEnabled && clusterVars.length > 0 ? (
+                  Array.from({ length: clusterK }, (_, i) => (
+                    <span key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ width: 12, height: 3, background: CLUSTER_PALETTE[i % CLUSTER_PALETTE.length], borderRadius: 2, display: "inline-block" }} />
+                      Cluster {i}
+                    </span>
+                  ))
+                ) : (
+                  <>
+                    {availableFronts.slice(0, 8).map((i) => (
+                      <span key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <span style={{ width: 12, height: 3, background: frontColor(i), borderRadius: 2, display: "inline-block" }} />
+                        Front {i}{i === 0 ? " (Pareto)" : ""}{visibleFronts[i] === false ? " (hidden)" : ""}
+                      </span>
+                    ))}
+                    {availableFronts.length > 8 && <span>+{availableFronts.length - 8} more</span>}
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -1312,7 +1023,7 @@ export default function ParetoApp() {
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleData.map((row, i) => {
+                    {tableData.map((row, i) => {
                       const isHL = highlightId === row._id;
                       const isP = row._front === 0;
                       return (
@@ -1355,7 +1066,7 @@ export default function ParetoApp() {
                   </tbody>
                 </table>
               </div>
-              {!visibleData.length && <div style={{ padding: 40, textAlign: "center", color: C.textDim, fontSize: 13 }}>No rows match filters or visible fronts.</div>}
+              {!tableData.length && <div style={{ padding: 40, textAlign: "center", color: C.textDim, fontSize: 13 }}>No rows match filters, visible fronts, or the active brush.</div>}
             </div>
           )}
         </div>

@@ -5,11 +5,19 @@ export function parseCSV(text) {
   const normalizeCell = (value) => String(value || "").replace(/^"|"$/g, '').trim();
 
   function split(line) {
-    const r = []; let cur = "", inQ = false;
-    for (const ch of line) {
-      if (ch === '"') inQ = !inQ;
-      else if (ch === ',' && !inQ) { r.push(cur.trim()); cur = ""; }
-      else cur += ch;
+    const r = [];
+    let cur = "", inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+        else { inQ = !inQ; }
+      } else if (ch === ',' && !inQ) {
+        r.push(cur.trim());
+        cur = "";
+      } else {
+        cur += ch;
+      }
     }
     r.push(cur.trim());
     return r;
